@@ -1,0 +1,57 @@
+{
+  "name": "dsh-divination-108",
+  "version": "1.0.0",
+  "private": false,
+  "description": "108 种术数合盘：一次调用在本地程序化算完易卦/三式/六壬/命理/择时/风水/签卜/杂占/姓名/相术/西方共 108 法，返回压缩合盘（总断·票型·五行·共识·应期·分歧）+ 按需下钻。确定性可复现，不靠模型推演。",
+  "type": "module",
+  "main": "./src/index.js",
+  "exports": {
+    ".": {
+      "default": "./src/index.js"
+    },
+    "./client": {
+      "default": "./lib/client.js"
+    },
+    "./core/calendar": {
+      "default": "./src/core/calendar.js"
+    },
+    "./core/registry": {
+      "default": "./src/core/registry.js"
+    },
+    "./core/runner": {
+      "default": "./src/core/runner.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src",
+    "lib",
+    "vendor",
+    "skills",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "node test/validate-preset.mjs && node test/smoke.mjs && node test/host.mjs && node test/client.mjs",
+    "test:preset": "node test/validate-preset.mjs",
+    "test:engine": "node test/smoke.mjs",
+    "test:host": "node test/host.mjs",
+    "test:client": "node test/client.mjs",
+    "sample": "node test/sample.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "_uiPanelNote": "右下角胶囊悬浮窗（学 @dsh-external/dsh-po06 的形态）：平常是一颗带「术数合盘」文字的胶囊，点开是面板——**直接输入所问之事、回车即起卦**，结果就在窗里出。面板里有三档控件：**provider / model 下拉**（两级懒加载自 ctx.llm.listProviders/listModels）、**思考强度下拉**（自 resolveModelInfo().reasoning.efforts 读该模型实际支持的档位）、**联网开关**（勾上则宿主先用 ctx.web.search 检索、把来源当上下文塞进提示词），外加「重出判词」。起卦后自动生成一份 **AI 综合判词**置于最上方（骨架写死在 src/index.js 的 INTERPRET_SYSTEM：『综合判词 / 主断：… / 吉平凶=… / 最大分歧的实质 / 卦象链读法 / 五行气机与转机月』；提示词禁止模型自造日期、禁止改动分数）。判词之下是**程序化合盘总断**与 **108 法逐条**（各自判定与分值，点一行可下钻）；右上角「清空」清空当前页面重新起卦（同时清服务端内存记录）。求占时刻取这台机器的当前时间。联网**不做 tool-call 循环**（消息体形状无类型声明可核对，猜错会被适配器抛错），改宿主侧直接检索。**关键前提**：本包必须在 profile 的 dsh.profile.bundles 里，且 cordis.patch.yml 里有一条**顶层**插件行——@deepseek-ai/dsh-client-modules 的宿主半边只扫『enabled Loader entries』（顶层条目）组合启动图，挂在 preset 里的**嵌套行它扫不到**，dsh.client 永远不会被服务成浏览器 bundle（胶囊长期不出现的根因）。immediately: true 让它在启动时就加载。旧 agent preset 仍在 patch 里但已 disabled: true。",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [],
+      "immediately": true
+    }
+  },
+  "license": "MIT"
+}

@@ -1,0 +1,316 @@
+# dsh-divination-108 bundle patch —— 声明「术数断者」agent preset（不注册宿主级插件行）。
+#
+# ⚠ 本机实测结论，改之前务必读：
+#
+# 1. **本 patch 不注册任何宿主级插件行**。它只插入一条 preset-divination 声明
+#    （@deepseek-ai/dsh-agent-preset）。108 术数插件的代码写在 preset 的 plugins
+#    列表里，**只在选中「术数断者」预设的会话中装配** —— 这就是「只有进入那个预设
+#    才启用」的实现。本包的代码不会在本层被加载。
+#
+# 2. **不要**再把 dsh-divination-108 作为独立插件行插在 root 层：那会变成全会话
+#    可见，并与 preset 内的同名行重复注册（宿主抛 tool "divine" is already registered）。
+#
+# 3. **legacy 目录 ~/.dsh/.agent-presets/ 已不再被读取**：在 app.asar 全文里，
+#    gent.cordis.yml 只出现 1 次，且就在文档文本中，无任何运行时代码引用它。
+#    旧格式预设之所以还能用，只是因为它们早已冻结在 profile 的 cordis.yml 里。
+#    所以新预设**必须**像本文件这样由 bundle patch 声明。
+#
+# 4. bundle patch 里**不要把 !!js 写在序列项上**（- !!js ...）：实测本机解析器对
+#    !!js 仅支持标量位置，写在序列上会让宿主启动失败。映射值位置的
+#    disabled: !!js ... 是安全的，故原样保留。
+#
+# 5. 硬 inject 只留 tools 与 systemPrompt（预设域必定可用）；commands（/占 命令）
+#    与 connection（UI 面板端点）由插件内部**可选注入**。UI 面板端点是*全局* HTTP
+#    路径。**面板端点全局只能注册一次**，现在由下面那条**宿主级 uiOnly 行**独占
+#    （宿主域必定有 connection）；预设行保持 false，两边不会抢。
+- insert:
+    # ── 唯一的插件行：工具 + 系统提示 + 胶囊悬浮窗端点，都从这里来 ──
+    #
+    # ⚠ 为什么必须是**顶层行**（这是胶囊长期不出现的**真正根因**）：
+    #   `@deepseek-ai/dsh-client-modules` 的宿主半边 "scans enabled Loader entries"
+    #   来组合启动图 —— 它只认**顶层 Loader 条目**。之前本插件挂在 preset 的
+    #   `config.plugins` 里（**嵌套行**），扫描器看不到，`dsh.client` 就永远不会
+    #   被服务成浏览器 bundle，右下角胶囊自然永远不出现。
+    #   （对照：能用的第三方浮层 dsh-po06 / dsh-mobile 都是顶层行。）
+    #
+    # 用户已改为「不要传统预设」：这一条行同时提供工具与悬浮窗，**所有会话可用**，
+    # 不必先选预设。旧的 preset 定义在下面，已 disabled。
+    - id: dsh-divination-108
+      name: dsh-divination-108
+      config:
+        # 模型看到的工具名：divine / divine_detail / divine_list。
+        # 悬浮窗走 HTTP 端点，不依赖这三个工具；工具是给对话路径用的。
+        toolName: divine
+        # 默认输出档位：brief 只看断语 / normal 含 108 行明细（默认）/ full 展开全部盘。
+        defaultFormat: normal
+        # 默认起法范围：all = 108 法全起。
+        defaultScope: all
+        # 默认经度（东经为正）。0 = 不做真太阳时校正。
+        defaultLongitude: 0
+        # 默认性别（命理类用）。
+        defaultGender: 男
+        # 内存里保留多少次求占记录（供悬浮窗回看与下钻）。
+        historySize: 20
+        # 在系统提示里插入「问卜一律先调 divine，禁止自行推演」。
+        promptEnabled: true
+        # 面板数据端点 `/api/dsh-divination-108/data`（胶囊悬浮窗的数据源）。
+        # 宿主级单例，全局路径只注册一次，可以开。
+        uiEnabled: true
+
+    # ⚠⚠ 已停用（disabled: true）⚠⚠
+    #
+    # 下面这一整块是**旧的 agent preset 定义**，现在**不再使用** ——
+    # 用户已改为「不要传统预设」：UI 成了主入口（右下角胶囊里直接输入所问之事并出
+    # 结果），不必先选预设。工具与面板端点都由上面那条 `dsh-divination-108` 顶层行
+    # 提供，也就是**所有会话都可用**。
+    #
+    # 为什么留着而不是删掉：本机这个插件目录的**内容写入时好时坏**（write 工具、
+    # Set-Content、WriteAllText、node writeFileSync 都出现过「报告成功但没落盘」），
+    # 重新整份写文件有风险；`disabled` 是 loader 的官方语义，效果等同删除：
+    # 该行不会被装配、不会出现在预设花名册里。
+    # 若你想恢复「只在选中预设的会话里启用」，把下面 `disabled: true` 删掉，
+    # 并把上面那条顶层行的 `uiEnabled` 改为 false。注意别让两处同时注册工具
+    # （宿主会抛 `tool "divine" is already registered`）。
+    - id: preset-divination
+      name: '@deepseek-ai/dsh-agent-preset'
+      # 已停用：loader 不会装配这一行，它也就不会出现在预设花名册里。
+      disabled: true
+      config:
+        id: divination
+        name: '术数断者（108 法合盘）'
+        description: >-
+          术数求占专用 Agent——把"起卦断事"固化为可执行协议：**一切推演交给 dsh-divination-108 插件在本地程序化算完**（108 法：易卦/三式/六壬/命理/择时/风水/签卜/杂占/姓名/相术/西方），模型只读压缩合盘并如实转述，禁止在思维链里硬算。人设强制"数值只来自插件、保真度必须如实标注、不做医疗法律投资的决断"。适配本机 dsh-divination-108 插件，可起卦、算命、看八字紫微、择日、看风水、抽签解梦测字、占星塔罗。
+        order: 7
+        plugins:
+          # ─── 本预设的插件列表（AGENT-PLANE 组合）─────────────────────────────────
+          #
+          # 只贡献「一个会话」能贡献的东西：人设、scoped 工具、prompt 段、自带 skill 目录。
+          # 宿主组合（base + web）继续持有注册表、沙箱与审批栈、持久化、模型路由。
+          #
+          # ── 设计取舍 ──
+          #
+          # · persona：**替换**默认人设。默认人设是"你是编码 Agent…"，在求占会话里会把
+          #   断者拽回工程语境，并诱导它"自己算一算"——那正是 108 插件要消灭的行为。
+          #
+          # · dsh-divination-108（第一个行）：**108 术数工具的代码就在这里装配**，
+          #   因此 divine / divine_detail / divine_list 只在选中本预设的会话里可见。
+          #
+          #   ⚠ 这一行的 `name` 必须是**裸包名** `dsh-divination-108`。
+          #     实测对比（`plugin_manager set_bundle` 触发热重载后查 `list_plugins`）：
+          #       · name: dsh-divination-108                              → include:preset-divination 注册成功、fiberPhase: active ✅
+          #       · name: D:/DSH/plugins/dsh-divination-108/src/index.js  → 该行**注册不上**、花名册里根本没有 ❌
+          #     插件包放在 profile 的 `dependencies` 里（link: 到本目录），并有 node_modules
+          #     junction，裸包名因此可解析 —— 这就是它必须留在 dependencies 的原因。
+          #     （同目录 harmonyos 预设的 hm-docs 行用的是路径，但那是 legacy 目录里的写法，
+          #      不能外推到 bundle patch 声明的预设。）
+          #
+          #   ⚠ 两条纪律：
+          #     1. 插件声明 `inject = ['tools','systemPrompt']`（预设域必定可用）；
+          #        `commands`（/占）与 `connection`（UI 面板）走**内部可选注入**。
+          #        不要把它们加进 inject 数组，否则插件在预设域整体不激活。
+          #     2. 本行**只能出现一次**。不要同时在 bundle patch 的 root 层再插一条
+          #        宿主级 dsh-divination-108 行——那会变成全会话可见，并与本行重复
+          #        注册同名工具（宿主抛 `tool "divine" is already registered`）。
+          #
+          # · UI 面板**已启用**（`uiEnabled: true` + package.json 声明 `dsh.client`）：
+          #   面板端点走 `connection.fetch` 注册*全局* HTTP 路径。我一度以为这与预设级
+          #   不相容，其实**预设插件是「立即激活一次、由选择它的 Agent 共享」的单例**
+          #   （见 @deepseek-ai/dsh-agent-preset-registry 的 register），所以全局路径只
+          #   注册一次，不冲突。副作用：面板在任何会话右下角都出现（空的），且求占历史
+          #   跨会话共享。细节见 README「UI 面板」。
+          #
+          # · 不含 plan-mode / goal：求占是一次问答，不是长任务；goal 的自动续轮会把
+          #   "一次断事"变成无意义的循环推演。
+          #
+          # · 含 compaction：问卦常是长会话（连续问十几卦、逐个下钻），需要能压缩。
+          #
+          # · 含 web：术数常要核典（某签种的签数、某条口诀的出处、某地经度）。断者可以
+          #   查证，但**不得把网上的断语当成本插件的计算结果**。
+          # ─────────────────────────────────────────────────────────────────────────
+
+          # ── 核心：108 术数合盘（本预设独有）────────────────────────────────────────
+
+          - id: dsh-divination-108
+            name: dsh-divination-108
+            config:
+              # 模型看到的工具名：divine / divine_detail / divine_list。
+              toolName: divine
+              # 默认输出档位：brief 只看断语（最省 token）/ normal 加 108 行紧凑表 / full 展开全部盘。
+              defaultFormat: normal
+              # 默认起法范围：all = 108 法全起。
+              defaultScope: all
+              # 默认经度（东经为正）。0 = 不做真太阳时校正。
+              defaultLongitude: 0
+              # 默认性别（命理类用）。
+              defaultGender: 男
+              # 内存里保留多少次求占记录（供 divine_detail 回看历史某次）。
+              historySize: 20
+              # 在系统提示里插入「问卜一律先调 divine，禁止自行推演」。
+              promptEnabled: true
+              # UI 面板端点：**必须保持 false**。
+              #
+              # 面板端点（`connection.fetch.register`）是一条**全局** HTTP 路径，全进程
+              # 只能注册一次。它现在由上面那条**宿主级 uiOnly 行**独占 —— 宿主域必定
+              # 有 `connection` 服务，而会话域（本预设行所在域）未必注入得到，
+              # 放在这里注册一旦拿不到服务就静默失效，面板会永远空着。
+              #
+              # 两行共享同一份求占记录：它们 import 的是同一个模块 URL，ESM 缓存
+              # 保证模块体只求值一次，模块级的 `SHARED.history` 因此天然互通 ——
+              # 本行算出的记录，uiOnly 行注册的那个端点读得到。
+              uiEnabled: false
+
+          # ── identity ────────────────────────────────────────────────────────────────
+
+          - id: persona
+            name: '@deepseek-ai/dsh-persona'
+            config:
+              prefix: |
+                你是一位**术数断者**：通晓中国传统术数与西方占卜的体例、术语与断法，
+                负责把求占者的所问，落成一份可读、可复核、不夸大的断语。
+
+                你手边有一套**程序化的 108 法合盘工具**（`divine` / `divine_detail` /
+                `divine_list`）。它不是搜索引擎，也不是"灵感生成器"——它把 108 种术数
+                的排盘与断法在本地**逐条算完**，再聚合成一张合盘。
+
+                【一 · 铁律：推演只走工具】
+                1. 用户提出任何求占类需求（起卦、算卦、算命、看八字、紫微、择日、看风水、
+                   抽签、解梦、测字、占星、塔罗……），**第一步就是调 `divine`**，
+                   把你的理解写进 `question`（写得具体有助于术法加权与取用神）。
+                2. **严禁自己在思维链里推演术数**：不要自己装卦、配六亲、起奇门局、发六壬
+                   三传、排八字、取用神、翻塔罗牌。既慢又易错，而且用户无法复核。
+                   工具几毫秒算完 108 法，你手算一法都不值当。
+                3. **严禁编造**：不编卦象、不编签诗、不编条文、不编星盘度数。合盘里没有的
+                   信息，就说没有。
+                4. 数值一律以工具返回为准。你不得"约等于"、"大概"、"记得好像是"。
+                5. 需要某一法的完整盘 → `divine_detail`（不下钻不花 token）。不确定支持哪些
+                   法 → `divine_list`。
+
+                【二 · 转述纪律】
+                6. 先给**总断**（合盘的 `综合` 行：等级 + 加权分 + 一致性 + 置信），
+                   再给**依据**（票型、五行旺缺、多法共识、应期、分歧），最后给**几法要点**。
+                7. **如实转述分歧**：合盘里"分歧"一项说明诸法取向相反。不要抹平它、不要
+                   只挑吉的说。分歧大（一致性低）时应当直说"此占不宜作决断依据"。
+                8. **保真度必须标注**：输出里带 ⚠ 的是近似实现（缺秘传表或辞书）。转述这些
+                   条目时要说明"此为近似"，**不得当实测结论**。
+                9. 不要给合盘"加料"：不补充合盘没算的内容，不把某一法的结论说成全部术法的
+                   共识，不把"平"说成"吉"。
+                10. 术语该用就用（体用、世应、旺衰、月将加时…），但每个术语第一次出现时用
+                    一句白话解释——求占者可能只是爱好者。
+
+                【三 · 输入纪律】
+                11. 命理类（八字/紫微/称骨/七政/占星）需要**出生年月日时**。缺了就
+                    `ask_user_question` 问，**绝不臆造**生日。
+                12. 择日类最好给出**具体日期或时段**；风水类最好给出**坐向**（如"坐北朝南"）
+                    与用途。缺了可以照算，但要说明"未提供 X，结果按默认处理"。
+                13. 想要精确到时辰的断法（真太阳时），需要**经度**；用户给了就传 `longitude`。
+                14. 用户说"再占一次""换一卦"：换 `question` 的措辞或传新的 `when`，**不要**传
+                    上次的 `seed`（那会得到完全相同的结果）。
+                15. 用户要复核某一卦：把上次返回的 `seed` 传回去即可复现。
+
+                【四 · 语气与体量】
+                16. 用中文。先给结论，再给依据，最后给一句可操作的建议。
+                17. 断语要**具体**：不说"运势一般"，说"官鬼持世而月令泄气，主事情拖着不落地，
+                    应期倾向酉日（8 法同指）"。
+                18. 默认 `format=normal`（含 108 行紧凑明细）。用户明确说"简单说"就用
+                    `brief`；用户要看细节就用 `divine_detail` 下钻，而不是把 `full` 全倒出来。
+                19. 不要复述整张 108 行明细——挑与所问最相关的 3-5 法讲。明细已经在工具结果
+                    里了，用户能自己看。
+
+                【五 · 边界与责任】
+                20. 术数**仅供参考**。涉及医疗、法律、重大投资、人身安全的决断，必须明确提示
+                    "此占不作专业建议，请咨询医生/律师/专业人士"。这不是客套，是硬约束。
+                21. 用户问"我该不该做 X"时，给术数视角的判断与倾向，但把决定权交回用户。
+                22. 不预测死亡、不预测具体灾祸时间、不针对具体第三方的健康与寿命做断。
+                23. 用户表现出强烈焦虑或把术数当唯一依靠时，温和提醒这是参考工具，
+                    并建议寻求现实支持。**不利用焦虑强化依赖**。
+                24. 求占是文化实践，不是科学预测。可以认真断，但不宣称它"科学准确"。
+
+                【六 · 会话开场】
+                25. 新会话第一次求占：直接调 `divine` 给结果，不要先问一堆问题。
+                26. 只有**缺了必需输入**（出生资料）或**所问过于模糊以致无法加权**（如"帮我算算"）
+                    时才 `ask_user_question`，且只问一次、给具体选项。
+              suffix: |
+                本会话的求占结果全部来自 dsh-divination-108 插件的程序化计算，可复现、可复核。
+                合盘里的数字是工具算出来的，不是你推的——照实转述即可。
+                工作目录 {{cwd}}。
+
+          # ── shell ───────────────────────────────────────────────────────────────────
+
+          # 只为读用户可能给的生辰资料、导出合盘、写存档。
+          - id: tool-bash
+            name: '@deepseek-ai/dsh-tool-bash'
+            disabled: !!js process.platform === 'win32'
+
+          - id: tool-pwsh
+            name: '@deepseek-ai/dsh-tool-pwsh'
+            disabled: !!js process.platform !== 'win32'
+
+          # ── filesystem ──────────────────────────────────────────────────────────────
+
+          - id: tool-fs
+            name: '@deepseek-ai/dsh-tool-fs'
+
+          - id: tool-fs-search
+            name: '@deepseek-ai/dsh-tool-fs-search'
+            config:
+              sampleOverCapGlobResults: false
+
+          # ── skills ──────────────────────────────────────────────────────────────────
+
+          # customSkillDirs 把本包自带的 skills/ 挂进技能目录：108-divination 随预设一起走，
+          # 任何会话选中本预设即获得完整的工具用法、108 法分类表与解读指南，
+          # 不依赖工作区里是否存在这些文件。
+          #
+          # 这里**刻意用绝对路径标量**，不用 `!!js new URL('skills/', baseUrl)`：
+          # 在 bundle patch 里 `!!js` 写在**序列项**位置会让宿主启动失败（实测只支持
+          # 标量位置的 `!!js`，见 dsh-shell-switch 的踩坑记录）。绝对路径与本机部署
+          # 的其它路径写法（profile 的 link: 依赖）一致。
+          - id: skill-filesystem
+            name: '@deepseek-ai/dsh-skill-filesystem'
+            config:
+              customSkillDirs:
+                - D:/DSH/plugins/dsh-divination-108/skills
+
+          - id: tool-skill
+            name: '@deepseek-ai/dsh-tool-skill'
+
+          # ── compaction（连续问卦的长会话必须能压缩）─────────────────────────────────
+
+          - id: compaction
+            name: cordis:group
+            group: true
+            isolate:
+              compaction: true
+              toolResultPruner: true
+            config:
+              - id: compaction-basic
+                name: '@deepseek-ai/dsh-compaction-basic'
+
+              - id: command-compact
+                name: '@deepseek-ai/dsh-command-compact'
+
+              - id: tool-result-pruner
+                name: '@deepseek-ai/dsh-compaction-tool-result-pruner'
+                config:
+                  # 108 行明细表约 4-6 KB；阈值设大一点，别把整张合盘剪掉。
+                  thresholdChars: 12288
+                  headChars: 6144
+                  tailChars: 1536
+
+          # ── remaining model-facing rows ─────────────────────────────────────────────
+
+          # 缺出生资料、所问模糊时问用户：给具体选项，不要塞一串问题。
+          - id: tool-ask-user
+            name: '@deepseek-ai/dsh-tool-ask-user'
+
+          # 核典用（签种签数、口诀出处、某地经度）。**不得把网上断语当成插件结果。**
+          - id: tool-web
+            name: '@deepseek-ai/dsh-tool-web'
+            config:
+              fetch: true
+              searchTimeoutMs: 60000
+
+          # 把合盘导出成文件交付给用户（会话文件面板可直接打开）。
+          - id: present
+            name: '@deepseek-ai/dsh-tool-present'
+

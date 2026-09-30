@@ -1,0 +1,17 @@
+# 依赖与构建产物
+node_modules/
+dist/
+*.tsbuildinfo
+
+# 临时 / 编辑器 / 系统噪音
+_tmp_*
+*.log
+*.bak
+*.orig
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ⚠ 注意：vendor/lunar.cjs **必须提交**。
+# 本机的 `~/.dsh/profiles/*/node_modules` 里指向 npm 全局 dsh 的 junction 全是失效的，
+# 所以农历/节气库是直接内置进仓库的，不能当构建产物忽略掉。
