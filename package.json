@@ -29,7 +29,8 @@
     "vendor",
     "skills",
     "cordis.patch.yml",
-    "README.md"
+    "README.md",
+    "NOTICE.md"
   ],
   "scripts": {
     "test": "node test/validate-preset.mjs && node test/smoke.mjs && node test/host.mjs && node test/client.mjs",
@@ -42,7 +43,7 @@
   "engines": {
     "node": ">=20"
   },
-  "_uiPanelNote": "右下角胶囊悬浮窗（学 @dsh-external/dsh-po06 的形态）：平常是一颗带「术数合盘」文字的胶囊，点开是面板——**直接输入所问之事、回车即起卦**，结果就在窗里出。面板里有三档控件：**provider / model 下拉**（两级懒加载自 ctx.llm.listProviders/listModels）、**思考强度下拉**（自 resolveModelInfo().reasoning.efforts 读该模型实际支持的档位）、**联网开关**（勾上则宿主先用 ctx.web.search 检索、把来源当上下文塞进提示词），外加「重出判词」。起卦后自动生成一份 **AI 综合判词**置于最上方（骨架写死在 src/index.js 的 INTERPRET_SYSTEM：『综合判词 / 主断：… / 吉平凶=… / 最大分歧的实质 / 卦象链读法 / 五行气机与转机月』；提示词禁止模型自造日期、禁止改动分数）。判词之下是**程序化合盘总断**与 **108 法逐条**（各自判定与分值，点一行可下钻）；右上角「清空」清空当前页面重新起卦（同时清服务端内存记录）。求占时刻取这台机器的当前时间。联网**不做 tool-call 循环**（消息体形状无类型声明可核对，猜错会被适配器抛错），改宿主侧直接检索。**关键前提**：本包必须在 profile 的 dsh.profile.bundles 里，且 cordis.patch.yml 里有一条**顶层**插件行——@deepseek-ai/dsh-client-modules 的宿主半边只扫『enabled Loader entries』（顶层条目）组合启动图，挂在 preset 里的**嵌套行它扫不到**，dsh.client 永远不会被服务成浏览器 bundle（胶囊长期不出现的根因）。immediately: true 让它在启动时就加载。旧 agent preset 仍在 patch 里但已 disabled: true。",
+  "_uiPanelNote": "右下角胶囊悬浮窗：平常是一颗带「术数合盘」文字的胶囊，点开是面板。**懒人化（task-21 重构）：一屏一问一答，结论优先，细节默认收起** —— 顶部只有一个输入框（所问之事，回车即起卦、Esc 清空）；provider / model / 思考强度 / 联网 / 重出判词 全部收进「高级」折叠区，默认取配置默认值，不打开也能用；定位（浏览器 navigator.geolocation）自动执行、不让用户点。结果区自上而下：① 大字总断（吉/平/凶 + 分门加权分 + 一致性/置信小字）→ ② 一句话白话结论（AI 判词的「一句话收束」；无判词则退回合盘 advice 首句，骨架写死在 src/index.js 的 INTERPRET_SYSTEM）→ ③ 三行要点（五行 / **跨门共识，显示 N法/M门** / 应期）→ ④ 提示条一行（⚠近似法数 · 未起法数 · 位置与是否真太阳时校正 · 随机模式或 seed 复现 · seed，可点开看逐条）→ 按钮行（**再占一次**（默认随机模式：重问本就可能是新结果，面板不承诺一致）+ 复制结论 + 复制 seed）→ ⑤ 五个默认收起的折叠块（108 法明细（点行下钻）/ 分歧（含 D1–D5 等级与 reason）/ 分类加权 / 出处账本 / 完整 AI 判词）；右上角「清空」清空页面并清服务端内存记录。折叠用 display:none 实现（内容始终在树里，切换不丢状态，压力测试仍真的渲染 108 行）。求占时刻取这台机器的当前时间；经度取不到时如实标注「未做真太阳时校正」，绝不臆造。联网**不做 tool-call 循环**（消息体形状无类型声明可核对，猜错会被适配器抛错），改宿主侧直接检索。**关键前提**：本包必须在 profile 的 dsh.profile.bundles 里，且 cordis.patch.yml 里有一条**顶层**插件行——@deepseek-ai/dsh-client-modules 的宿主半边只扫『enabled Loader entries』（顶层条目）组合启动图，挂在 preset 里的**嵌套行它扫不到**，dsh.client 永远不会被服务成浏览器 bundle（胶囊长期不出现的根因）。immediately: true 让它在启动时就加载；**改完 lib/client.js 需先刷新页面（F5）**，若仍旧面板则重启宿主后再刷新。旧 agent preset 仍在 patch 里但已 disabled: true。",
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"

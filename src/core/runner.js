@@ -80,7 +80,66 @@ export function runOne(entry, chart) {
     return { entry, outcome: null, error: `算错:${err?.message ?? String(err)}` }
   }
   if (!raw) return { entry, outcome: null, error: '本法无解' }
+  // v2 加固：分数必须是有限数。v1 里 makeOutcome 会把 NaN 夹成 0，
+  // 那等于**把实现 bug 静默变成一票"平"**——比报错更危险，因为合盘看不出来。
+  // 这里改成显式失败，让它以「未起」出现在合盘里（错误信息带法号，便于定位）。
+  if (!Number.isFinite(Number(raw.score))) {
+    return { entry, outcome: null, error: `算错:分数非有限数(${raw.score})` }
+  }
+  if (typeof raw.essence !== 'string' || raw.essence.trim() === '') {
+    return { entry, outcome: null, error: '算错:essence 为空' }
+  }
   return { entry, outcome: makeOutcome({ fidelity: entry.fidelity, ...raw }) }
+}
+
+/**
+ * 审计一批结果（v2 新增，供最终验收与独立验证使用；不参与运行时判断）。
+ *
+ * 它回答的是"这盘看起来算完了，但算得**可信**吗"：
+ * 有多少法没给出处、有多少法没给证据链、有没有两法吐逐字相同的断语（偷懒信号）。
+ *
+ * @param {Array<{entry:object, outcome:object|null, error?:string}>} results 结果。
+ * @returns {object} 审计报告。
+ */
+export function auditResults(results) {
+  const list = Array.isArray(results) ? results : []
+  const computed = list.filter((r) => r.outcome)
+  const noCite = []
+  const noEvidence = []
+  const noTiming = []
+  const dupMap = new Map()
+  let nanWuxing = 0
+  for (const r of computed) {
+    const d = r.outcome.detail ?? {}
+    const cites = Array.isArray(d.cite) ? d.cite.filter((c) => String(c ?? '').trim() !== '') : (d.cite ? [d.cite] : [])
+    if (cites.length === 0) noCite.push(r.entry.no)
+    const ev = Array.isArray(d.evidence) ? d.evidence : []
+    if (ev.length === 0) noEvidence.push(r.entry.no)
+    if (!r.outcome.timing) noTiming.push(r.entry.no)
+    for (const w of ['木', '火', '土', '金', '水']) {
+      if (!Number.isFinite(r.outcome.wuxing[w])) nanWuxing += 1
+    }
+    const key = r.outcome.essence
+    const cur = dupMap.get(key) ?? []
+    cur.push(r.entry.no)
+    dupMap.set(key, cur)
+  }
+  /** 逐字相同的断语（>1 法共用同一句 = 该族可能在偷懒）。 */
+  const duplicateEssence = [...dupMap.entries()]
+    .filter(([, nos]) => nos.length > 1)
+    .map(([essence, nos]) => ({ essence, nos }))
+    .sort((a, b) => b.nos.length - a.nos.length)
+  return {
+    total: list.length,
+    computed: computed.length,
+    skipped: list.length - computed.length,
+    errors: list.filter((r) => !r.outcome).map((r) => ({ no: r.entry.no, name: r.entry.name, error: r.error })),
+    missingCite: noCite,
+    missingEvidence: noEvidence,
+    missingTiming: noTiming,
+    duplicateEssence,
+    nanWuxing,
+  }
 }
 
 /**

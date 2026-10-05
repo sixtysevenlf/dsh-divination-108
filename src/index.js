@@ -177,6 +177,8 @@ function toChartInput(args, config) {
     question: typeof args.question === 'string' ? args.question : '',
     when: parseWhen(args.when),
     longitude,
+    // 经度来源如实透传（面板传「用户当前位置」；显式给了经度但没说明 → calendar 按"手动指定"推定）
+    longitudeFrom: typeof args.longitudeFrom === 'string' ? args.longitudeFrom : undefined,
     gender: args.gender === '女' ? '女' : (args.gender === '男' ? '男' : config.defaultGender),
     birth: parseBirth(args.birth),
     numbers: Array.isArray(args.numbers) ? args.numbers : undefined,
@@ -198,7 +200,23 @@ function toChartInput(args, config) {
 // 而消息体形状没有类型声明可核对，猜错会被真实适配器直接抛错。所以改成**宿主侧
 // 直接检索**（`ctx.web.search`）再把资料当上下文塞进提示词 —— 少一层协议，稳得多。
 
-/** 综合判词的口吻与格式（用户指定的结构，照抄这个骨架）。 */
+/**
+ * 综合判词的口吻与格式（用户指定的结构，照抄这个骨架）。
+ *
+ * v2 重写（task-18）：在**不动用户指定骨架、不动三条既有红线**的前提下，把调研来的
+ * 「票数不构成独立证据 / 确定性事实不可改写 / 口径诚实 / 应期不做加权平均 / 禁止合成虚构分数 /
+ * 不声称做过未实现的分级」写进骨架。每条新增条款对应哪个项目的哪条做法，见
+ * `docs/verification/interpret-system-rewrite.md`（出处写在文档而非提示词里：
+ * 提示词是给模型看的，塞仓库名只会诱使模型在判词里复述这些名字）。
+ *
+ * ⚠ 两条硬约束（改这个常量前先读）：
+ * 1. **只能引用 `buildBoardBrief()` 真会喂给模型的字段** —— 综合(判定/分门加权分/一致性/置信)、
+ *    票型、五行(旺缺)、断语、多法共识(key×N法)、应期(text×N法)、分类加权、最大分歧、
+ *    108 法明细(编号/名称/⚠/判定/分值/依据，含「未起」)、以及断语里内嵌的「N法/M门」「体系分歧」。
+ *    `divergence.familySkew`、`overall.rawScore`、`consensusKeys.fams`、`evidenceDigest`、
+ *    `meta.agreement` **都没有进简报** —— 写进骨架模型也看不到，只会逼它编。
+ * 2. `test/host.mjs` 断言本常量含字面量 `综合判词`（骨架标题）与 `只能来自合盘`（红线 1）。
+ */
 const INTERPRET_SYSTEM = [
   '你是术数断者。下面是 dsh-divination-108 插件在本地程序化算出的 108 法合盘 —— 数值、票型、',
   '共识、应期、逐法依据全部来自插件，你**不得**重新推演、不得改动分数。',
@@ -220,16 +238,37 @@ const INTERPRET_SYSTEM = [
   '<把易卦类的卦象串成一条链，如 火水未济 → 山水蒙 + 大畜 → 蛊>：<这条链怎么读>。',
   '<五行 某旺某缺>：<现在的气机是什么、待什么月方见转机>。',
   '',
-  '硬性要求：',
+  '硬性要求（1–7 为既有红线，8–13 为 v2 追加，全部等同硬性）：',
   '1. **时间窗、干支、日期落点只能来自合盘里的「应期」与逐法明细**。合盘没给的一律不许出现；',
   '   若合盘只给了粗粒度应期（如「火月」），就照实说粗粒度，不要编出具体日子。',
-  '2. 每一个数字（票型/加权/一致性/分值差）必须**照抄合盘**，不许四舍五入成别的数、不许改。',
+  '2. 合盘是**确定性事实**：每一个数字（票型/加权分/一致性/分值差）、票型、保真度标记（`⚠`）、',
+  '   盘面事实都必须**原样引用** —— 不许重算、不许四舍五入成别的数、不许改值、不许按你的判断调分。',
   '3. 「最大分歧」那一条要取合盘里分差最大的那一对，并且**解释它在事上意味着什么**（不是复述数字）。',
   '4. 「卦象链」那一条优先用易卦类（之卦占 / 互卦占 / 大象占 / 六爻纳甲）的依据串起来；',
   '   若合盘里那几法没有可串的卦名，就改说该类的共识，不要硬编卦名。',
   '5. 主断要**可被证伪**（做什么、什么时候、什么形态），不要写「顺其自然」这类空话。',
   '6. 不要罗列 108 法，不要复述全部明细，不要加额外的标题或前后缀。',
   '7. 涉及医疗、法律、重大投资时，末尾另起一行点一句「仅供参考，请咨询专业人士」。',
+  '8. **票型不是证据**：「吉 N 法」多不等于结论成立（同一法门内部 24 法会大量同票），',
+  '   主断必须以「综合」行里的**分门加权分**与「多法共识」的**跨门数**（断语里写作 `N法/M门`）为准；',
+  '   票型只作呈现，不许把票数多的那一边直接当结论，也不许用票数另算一个分数。',
+  '9. **某一法门在影响结论时必须点名**：若「断语」里出现「体系分歧：…相差 N 分」，或「分类加权」',
+  '   里某一门与综合分明显背离，就要在判词里显式说明是哪个门在拉动结论 —— 这是结论可信度的关键信息，',
+  '   不许略过不提。',
+  '10. **口径诚实**：带 `⚠` 的是**近似实现**，不得当成实测结论陈述；「未起」的法必须如实点名',
+  '   （说明它未计入，而不是当成"没有不同意见"）；合盘没写的一律不补全、不含糊带过。',
+  '11. **分歧必须标等级**：合盘的「最大分歧」「体系分歧」与断语里带 **D1–D5 分级**',
+  '   （D1 口径分歧／D2 尺度分歧／D3 取用分歧／D4 资料不足／D5 真分歧）。引用时**照抄合盘给的等级**，',
+  '   并且只有 **D5 才可写成"诸法真分歧"**；D1–D4 不是"诸法矛盾"（分别是流派口径、时间量纲、用神取象、',
+  '   资料不足），不得混为一谈。合盘没给等级的分歧，就说"分歧项"，**不要自己编一个 D 级别**。',
+  '12. **应期不做加权平均、不编区间**：只能引用合盘给的应期文字与「多少法同指」（`×N法`）；',
+  '   不许把多个应期自己平均成一个，也不许在合盘没给区间时编出区间或置信范围。',
+  '13. **禁止合成虚构数字**：不得出现「综合可信度 87 分」「成功率约七成」这类由你生成的量化值。',
+  '   合盘没算的量就不写数，宁可用「偏吉/偏凶/不确定」这类定性词。',
+  '14. **本次的随机性模式已在合盘里自证**（「模式：随机模式 / seed 复现模式」一行）。',
+  '   若是**随机模式**：不要向用户承诺"同一问题同一时刻必然同结果"——重复求占本就可能不同；',
+  '   若用户想复现，把合盘给的 `seed` 告诉他，下次带上即可。若是 **seed 复现模式**：如实说明"本次按 seed 复现"。',
+  '   这一条与条款 2 不冲突：条款 2 管的是"别改合盘给的数字"，本条管的是"别改口径承诺"。',
   '',
   '若下面的「外部资料」非空，可以用它把判词落得更实（例如核对某个档期），',
   '但**不得**因外部资料改动合盘的分数或应期；两者冲突时以合盘为准并指出冲突。',
@@ -381,20 +420,97 @@ function parsePlan(text) {
  * @param {object} record 求占记录。
  * @returns {string} 简报文本。
  */
+/**
+ * 口径自证行 · 位置（经度来源 + 是否做了真太阳时校正）。
+ *
+ * **只在这里构造一次**：判词简报（`buildBoardBrief`）与工具文本（`runDivine`）共用同一份文案，
+ * 防止两处漂移 —— Lead 实测工具文本里缺这两行，根因正是"工具文本走 `format.js#render()` 那条路，
+ * 而 `format.js` 是冻结文件"，所以补在 index.js 侧、并共用这里。
+ * @param {object} record 求占记录。
+ * @returns {string} 一行文本。
+ */
+function positionLine(record) {
+  if (record?.position?.note) return `位置：${record.position.note}`
+  if (record?.solarNote) return `位置：经度未提供 → 未做真太阳时校正（${record.solarNote}）`
+  return '位置：经度未提供 → 未做真太阳时校正'
+}
+
+/**
+ * 口径自证行 · 随机性模式（用户 2026-02 更正：默认随机、seed 才可复现）。
+ *
+ * 两种模式都必须让模型看见，否则它会向用户承诺错的口径（例如"同问同刻必然同结果"）。
+ * @param {object} record 求占记录。
+ * @returns {string} 一行文本。
+ */
+function modeLine(record) {
+  if (record?.mode === 'seed') {
+    return `模式：seed 复现模式（seed=${record.seed}）→ 同问同刻 + 同 seed 必得同一结果`
+  }
+  return `模式：随机模式（真随机源；seedUsed=${record?.seed ?? ''}）→ **同问同刻重复求占允许不同，属正常**；`
+    + '记下 seedUsed 并回传 seed 才能复现本次结果'
+}
+
+/**
+ * 把一条求占记录压成给模型看的合盘简报（结论层 + 逐法一行）。
+ * @param {object} record 求占记录。
+ * @returns {string} 简报文本。
+ */
 function buildBoardBrief(record) {
   const b = record.board ?? {}
   const L = []
   L.push(`所问：${record.question}`)
   L.push(`时刻：${record.when}　四柱：${(record.pillars ?? []).join(' ')}　农历：${record.lunar ?? ''}`)
+  // 口径可见化（与工具文本共用同一份文案，见 positionLine/modeLine）
+  L.push(positionLine(record))
+  L.push(modeLine(record))
   const o = b.overall ?? {}
   L.push(`综合：${o.verdict} ${o.score >= 0 ? '+' : ''}${o.score}　一致性 ${o.consistency}　置信 ${o.confidence}`)
-  if (b.polarity) L.push(`票型：吉 ${b.polarity.吉} ｜ 平 ${b.polarity.平} ｜ 凶 ${b.polarity.凶}`)
+  if (b.polarity) L.push(`票型：吉 ${b.polarity.吉} ｜ 平 ${b.polarity.平} ｜ 凶 ${b.polarity.凶}（仅作呈现，不得当论据）`)
   if (b.wuxing) L.push(`五行：${Object.entries(b.wuxing).map(([k, v]) => `${k}${v}`).join(' ')}（${b.dominant ?? ''}旺 ${b.lacking ?? ''}缺）`)
   if (b.advice) L.push(`断语：${b.advice}`)
-  if (b.consensusKeys?.length) L.push(`多法共识：${b.consensusKeys.map((k) => `${k.key}×${k.count}法(${k.avg >= 0 ? '+' : ''}${k.avg})`).join('、')}`)
-  if (b.timing?.length) L.push(`应期（最重要，断语必须用它）：${b.timing.map((t) => `${t.text}×${t.count}法`).join('、')}`)
-  if (b.categories) L.push(`分类加权：${Object.entries(b.categories).map(([k, v]) => `${k}${v >= 0 ? '+' : ''}${v}`).join(' ')}`)
-  if (b.conflicts?.length) L.push(`最大分歧：${b.conflicts.slice(0, 4).map((c) => `${c.cat} ${c.high.name}${c.high.score >= 0 ? '+' : ''}${c.high.score} ↔ ${c.low.name}${c.low.score >= 0 ? '+' : ''}${c.low.score}`).join('；')}`)
+  // 主辅法分工（SKILL §五）：按事类给出的**法号白名单**（不再是"术语恰好撞进 note"）
+  const mainN = b.meta?.topicMain ?? []
+  const auxN = b.meta?.topicAux ?? []
+  if (mainN.length || auxN.length) {
+    L.push(`主法（×1.8）：${mainN.map((m) => `#${m.no}${m.name}`).join('、') || '—'}　辅法（×1.3）：${auxN.map((m) => `#${m.no}${m.name}`).join('、') || '—'}`)
+  }
+  if (b.consensusKeys?.length) L.push(`多法共识：${b.consensusKeys.map((k) => `${k.key}×${k.count}法/${k.cats}门(${k.avg >= 0 ? '+' : ''}${k.avg})`).join('、')}`)
+  // 合参矩阵：共识是否够格当"印证"（跨门 ≥2 且 ≥3 法；相关法门有未起/近似为主则记"资料不足"）
+  if (b.corroboration?.length) {
+    L.push(`合参矩阵：${b.corroboration.slice(0, 6).map((c) => `${c.key}=${c.status}`).join(' ｜ ')}（满足＝跨门印证；资料不足＝有未起或近似为主）`)
+  }
+  if (b.timing?.length) {
+    const fmt = (t) => `${t.text}×${t.count}法${t.lo !== null || t.hi !== null ? `[${t.lo}, ${t.hi})` : '（无端点）'}`
+    L.push(`应期（最重要，断语必须用它）：${b.timing.map(fmt).join('、')}`)
+    L.push('应期区间语义：[lo, hi) 为半开区间（单位：日，hi 不含）；无端点者只说措辞，不得编区间或当精确日期')
+  }
+  const cats = b.categories ?? Object.fromEntries(Object.entries(b.byCategory ?? {}).map(([k, v]) => [k, typeof v === 'object' ? v.score : v]))
+  if (Object.keys(cats).length) L.push(`分类加权：${Object.entries(cats).map(([k, v]) => `${k}${v >= 0 ? '+' : ''}${v}`).join(' ')}`)
+  if (b.conflicts?.length) L.push(`最大分歧：${b.conflicts.slice(0, 4).map((c) => `${c.cat}[${c.grade ?? '—'}] ${c.high.name}${c.high.score >= 0 ? '+' : ''}${c.high.score} ↔ ${c.low.name}${c.low.score >= 0 ? '+' : ''}${c.low.score}`).join('；')}`)
+  // 分歧分级 D1–D5（SKILL §六）：先判原因——D1–D4 不是"矛盾"，只有 D5 才称真分歧
+  const dv = b.divergence ?? {}
+  if (dv.familySkew !== undefined) {
+    L.push(`体系偏斜：逐法口径 − 分门口径 = ${dv.familySkew >= 0 ? '+' : ''}${dv.familySkew} 分（门间差 ${dv.gateGap ?? 0}）`)
+  }
+  if (dv.items?.length) {
+    L.push(`分歧分级：${dv.items.map((d) => `${d.code}=${d.grade}（${String(d.reason).slice(0, 40)}…）`).join('；')}｜总级 ${dv.grade ?? '—'}`)
+    L.push('分级口径：D1 口径（不同流派，并列不裁决）/ D2 尺度（时间量纲不同）/ D3 取用（用神取象不同）/ D4 资料不足（未起或近似，不是意见不同）/ D5 真分歧（同口径同尺度同取用仍相左）')
+  }
+  // 置信拆解：说明"票数不构成独立证据"（一致性以「门」为独立源算）
+  const ag = b.meta?.agreement
+  if (ag) {
+    L.push(`置信拆解：独立证据源 ${ag.independentSources ?? '—'} 门 ｜ 门间一致 ${ag.gateAgreement} ｜ 门间离散 ${ag.gateDispersion} ｜ 门内凝聚 ${ag.gateCohesion} ｜ 可信折扣 ${ag.trust} ｜ 覆盖 ${ag.coverage}`)
+    if (ag.pooledSignAgreement !== undefined) L.push(`（诊断量，不参与置信：逐法同号率 ${ag.pooledSignAgreement}、逐法离散 ${ag.pooledDispersion}、票型占比 吉${ag.voteShare?.吉} 平${ag.voteShare?.平} 凶${ag.voteShare?.凶}）`)
+  }
+  // 出处账本 + 证据分层 L1–L5
+  if (b.evidenceDigest?.length) {
+    const lv = b.evidenceDigest.levels
+    L.push(`证据账本：${b.evidenceDigest.slice(0, 3).map((e) => `${String(e.source).slice(0, 26)}×${e.count}`).join('；')}${lv ? `　｜分层 L1 ${lv.L1} L2 ${lv.L2} L3 ${lv.L3} L4 ${lv.L4} L5 ${lv.L5}（L5＝模型解读，不属插件）` : ''}`)
+  }
+  // 保真度逐项布尔位（过渡版：由 fidelity 与 detail 披露推断）
+  const bits = b.meta?.fidelityBitsSummary
+  if (bits) L.push(`保真位（各位置 true 的法数／过渡版推断）：历法 ${bits.历法} ｜ 星历 ${bits.星历} ｜ 表 ${bits.表} ｜ 辞书 ${bits.辞书} ｜ 图像 ${bits.图像}`)
+  if (b.meta?.skippedList?.length) L.push(`未起（如实点名，不得当"没有反对意见"）：${b.meta.skippedList.slice(0, 6).map((s) => `#${s.no}${s.name}(${s.reason})`).join('、')}`)
   // 起卦时整理下来的背景（含联网读到的关键事实）：判词可以据此把落点讲实。
   if (typeof record.notes === 'string' && record.notes.trim() !== '') {
     L.push('')
@@ -407,7 +523,9 @@ function buildBoardBrief(record) {
   for (const r of results) {
     const oc = r.outcome ?? {}
     const fid = r.fidelity === 'approx' ? '⚠' : ''
-    L.push(`${String(r.no).padStart(3, '0')} ${r.name}${fid} ${oc.verdict ?? '未起'} ${oc.score >= 0 ? '+' : ''}${oc.score ?? ''} ${(oc.essence ?? r.error ?? '').slice(0, 60)}`)
+    // 分值取一位小数：旧实现把 ±4.750000000000002 这类浮点尾数直接喂给模型
+    const sc = Number.isFinite(oc.score) ? Math.round(oc.score * 10) / 10 : ''
+    L.push(`${String(r.no).padStart(3, '0')} ${r.name}${fid} ${oc.verdict ?? '未起'} ${oc.score >= 0 ? '+' : ''}${sc} ${(oc.essence ?? r.error ?? '').slice(0, 60)}`)
   }
   return L.join('\n')
 }
@@ -641,6 +759,26 @@ const AGENT_SYSTEM = [
   '26. 所问过于模糊以致无法加权时（如"帮我算算"），先按最合理的理解起卦，',
   '    并在判词里说明你按什么理解算的。',
   '',
+  '【七 · 你可以追问补资料（**面板里是一问一答，用户能接着答**）】',
+  '27. 合盘里若有 **「未起」** 列表（合盘文本里写着"未起"的那些法），**那就是缺资料**：',
+  '    · 命理一类（#41–#58、#102、#105 等）缺 **出生年月日时（+性别）**；',
+  '    · `#6 梅花·报数卦` 缺 **报数**（随便报几个数）；',
+  '    · `#92/#93` 测字类缺 **所测的那个字**；',
+  '    · `#95–#97` 外应类缺 **外应**（你当时看到/听到/想到的）。',
+  '    **这些缺的东西只有用户能给** —— 没给就是没给，**绝不替用户编一个**（不编生日、不编数字、不编字）。',
+  '28. **应当主动追问**：先把已经算出来的结论给完（总断 + 3–5 法要点），',
+  '    然后在最后用**一段话一次问清**还缺哪几项（要什么、为什么有用）。',
+  '    **不要挤牙膏**（不要一问一答地逐项磨），也**不要**用一串问句把结论挤掉。',
+  '    例：「命理 18 法因缺出生资料未起；若你给出**出生年月日时与性别**，我可以补算八字/紫微/称骨再合断。」',
+  '29. 用户补答后，**可以再调一次 `divine`**（这次带上 `birth` / `gender` / `numbers` 等），',
+  '    **并以新盘为准**给出补充结论；同时说明"上一盘哪些法这次起上了"。',
+  '30. ⚠ **重起 ≠ 同一卦**：默认是**随机模式**，重新起盘会得到**另一卦**（不是原来那卦的新解读）。',
+  '    所以：**只是追问细节**（"那应期在几月""为什么这么说"）就用**同一张盘**回答，',
+  '    **不要重新起盘**；只有**补了新资料**、或用户明确说"再占一次"时才重起。',
+  '    若用户想复现原来那一卦，让他给你上次的 `seed`，你带 `seed` 再调 `divine` 即可复现。',
+  '31. 追问也适用于"所问不够具体"：需要**时间范围、对象、用途**才能取用神时，',
+  '    可以问，但仍要先把当前这盘按最合理理解断完，不要让用户空等。',
+  '',
   '══ 以下是**面板环境**的补充（与上面冲突时以本节为准）══',
   '',
   '你在一个**悬浮面板**里替用户跑这一轮，面板**会自己排版展示合盘**（总断、票型、',
@@ -811,7 +949,10 @@ const AGENT_TOOLS = [
     description: '108 种术数合盘（程序化，非模型推演）。一次调用会在本地算完 108 法'
       + '（易卦/三式/六壬/命理/择时/风水/签卜/杂占/姓名/相术/西方），返回一张合盘：'
       + '总断、吉平凶票型、五行旺缺、多法共识、应期、分歧项、以及 108 法逐条明细。'
-      + '`question` 写完整（对象 + 时间范围）；`format` 用 normal。',
+      + '`question` 写完整（对象 + 时间范围）；`format` 用 normal。'
+      + '**随机性口径**：默认**真随机** —— 同一问题同一时刻重复求占**允许不同，这是正常的**（术法里「心诚」是变量）；'
+      + '要复现某一次结果就把该次的 `seed` 传回来。'
+      + '`longitude` 优先用面板/用户当前位置的经度（真太阳时校正用）；取不到就别填，插件会如实标注「未做真太阳时校正」。',
     parameters: {
       type: 'object',
       properties: {
@@ -820,7 +961,8 @@ const AGENT_TOOLS = [
         when: { type: 'string', description: '求占时刻 YYYY-MM-DD HH:mm；留空 = 这台机器的当前时间' },
         birth: { type: 'string', description: '出生资料 YYYY-MM-DD HH:mm（命理类需要；用户没给就别填）' },
         gender: { type: 'string', enum: ['男', '女'], description: '性别（命理类用）' },
-        longitude: { type: 'number', description: '当地经度（做真太阳时校正用）' },
+        longitude: { type: 'number', description: '当地经度（做真太阳时校正用；优先用户当前位置，取不到不填）' },
+        longitudeFrom: { type: 'string', description: '经度来源说明（如「用户当前位置（浏览器定位）」/「用户手动指定杭州」；用于如实标注）' },
         numbers: { type: 'array', items: { type: 'number' }, description: '报数（梅花报数卦用）' },
         scope: { type: 'string', description: '起法范围，默认 all' },
       },
@@ -1268,6 +1410,11 @@ export function apply(ctx, config) {
       pillars: chart.pillars,
       lunar: chart.lunar.text,
       solarNote: chart.solarNote,
+      longitudeFrom: chart.longitudeFrom,
+      position: chart.position,
+      /** 随机性模式自证：随机模式 / seed 复现模式（供记录、简报与面板显示口径）。 */
+      mode: chart.meta?.mode ?? 'random',
+      modeNote: chart.meta?.modeNote ?? '',
       seed: chart.seedBase,
       topic: board.meta.topic,
       board,
@@ -1284,7 +1431,11 @@ export function apply(ctx, config) {
       })),
     })
 
-    const text = `【求占 #${record.id}】\n` + render({ board, results, mode, detailNos })
+    // 工具文本 = 记录头 + **口径自证两行** + format.js 渲染的合盘。
+    // 那两行走 index.js 侧（format.js 冻结、不能改），且与判词简报共用同一份文案构造
+    // （positionLine/modeLine）——默认档与 brief 档都带上。
+    const text = `【求占 #${record.id}】\n${positionLine(record)}\n${modeLine(record)}\n`
+      + render({ board, results, mode, detailNos })
     return { record, text }
   }
 
@@ -1352,8 +1503,11 @@ export function apply(ctx, config) {
       '**转述纪律（用户明确要求「应多尽多」）**：把返回的 108 行明细**原样全部转述**给用户（含编号/名称/符号/分值/依据），只可整理格式，**不得删条目、不得只挑前几名、不得改写成散文**。分歧项与近似项(⚠)也必须逐条如实转述。要精简是用户说了算：用户主动说「别啰嗦/只要结论」时才改传 format="brief"。',
       '输出档位用 format 控制：normal 含 108 行明细（默认，推荐）、full 展开全部盘、brief 只看断语（最省）、table 只要明细表。要看某一法的完整盘，用 divine_detail。',
       '所问之事写进 question（会用于术法加权与取用神，例如问姻缘会加权月老签与夫妻宫）。',
-      '**求占时刻不用问用户**：when 缺省 = 这台机器的当前时间，插件自己取，直接算。只有用户主动给了别的时刻（如「用昨晚 11 点算」）才传 when。longitude 缺省 0（不做真太阳时校正）；birth 出生资料只有命理类需要，缺了就问（这个无法从机器时间推定）；其余可选：gender 性别、numbers 报数（梅花报数卦用）、seed 复现种子。',
-      '结果是确定性的：同问同刻必得同一结果；把返回的 seed 记下可复现。',
+      '**求占时刻不用问用户**：when 缺省 = 这台机器的当前时间，插件自己取，直接算。只有用户主动给了别的时刻（如「用昨晚 11 点算」）才传 when。',
+      '**经纬度按用户当前位置算**：面板会用浏览器定位取当前经度并随请求传入（无需你问用户）；用户手动给了地点（如「杭州」）就传该地经度并注明来源。取不到经度时**不要臆造**，插件会如实标注「未做真太阳时校正」。',
+      'birth 出生资料只有命理类需要，缺了就问（这个无法从机器时间推定）；其余可选：gender 性别、numbers 报数（梅花报数卦用）、seed 复现种子。',
+      '**随机性口径（重要）**：默认是**真随机** —— 每次调用取一次真实随机源，故**同一问题同一时刻重复求占，结果允许不同，这是正常的**（术法里「心诚」是变量），不要向用户承诺"同问同刻必得同一结果"。',
+      '要**复现**某一次结果（复核、留档、测试）：把该次返回的 `seed` 记下，下次传回来即可复现。返回体与合盘里会自证本次是「随机模式」还是「seed 复现模式」。',
       '保真度分三档：full 全算法 / core 核心算法 / approx 近似（缺秘传表或辞书，输出带 ⚠）。插件不伪造签诗原文与秘传条文。',
     ].join('\n'),
     parameters: {
@@ -1629,6 +1783,7 @@ export function apply(ctx, config) {
             const out = {
               ok: true,
               sid,
+              sessionId: sid,
               state: st.done === true ? (st.error !== '' ? 'error' : (st.state ?? 'done')) : 'running',
               steps: st.steps,
               searches: st.searches,
@@ -1637,8 +1792,11 @@ export function apply(ctx, config) {
               judgment: st.judgment ?? '',
               record: st.record ?? null,
             }
-            // 交付完成后再保留一次，让面板取走结果；之后释放
-            if (st.done === true) {
+            // 交付完成后再保留一次，让面板取走结果；之后释放。
+            // ⚠ **多轮会话（conversation=true）不释放**：它还要接下一轮提问，
+            //   释放了下一轮就会「会话不存在」，用户看到的是"追问失联"。
+            //   这类会话靠 AGENT_LIMITS.ttlMs / maxSessions 的 agentPrune 回收。
+            if (st.done === true && st.conversation !== true) {
               if (st.picked === true) AGENT_SESSIONS.delete(sid)
               else st.picked = true
             }
@@ -1663,15 +1821,59 @@ export function apply(ctx, config) {
             // 一个请求跑完一整轮：没有续跑、没有一问一答
             const question = typeof body.question === 'string' ? body.question.trim() : ''
             if (question === '') return json({ ok: false, error: '缺少所问之事（question）' }, 400)
-            const st = {
-              question,
-              messages: [{ role: 'user', content: [{ type: 'text', text: question }] }],
-              steps: [],
-              searches: 0,
-              at: now,
+            // 面板按用户当前位置取到的经度：**必须让模型在调用 divine 时原样带上**（它不会自己知道）。
+            // 取不到时明确要求「不要用别的值顶替」——避免模型为了"填满参数"而臆造一个经度。
+            const geoFrom = typeof body.longitudeFrom === 'string' ? body.longitudeFrom.trim().slice(0, 120) : ''
+            const geoHint = Number.isFinite(body.longitude)
+              ? `\n\n【起卦资料 · 面板已就位，调用 divine 时必须原样使用】longitude: ${body.longitude}（来源：${geoFrom !== '' ? geoFrom : '未说明'}）`
+                + `\n→ 调用 divine 时带上 longitude: ${body.longitude} 与 longitudeFrom: ${JSON.stringify(geoFrom !== '' ? geoFrom : '未说明来源')}；不要改动这个值。`
+              : (geoFrom !== ''
+                ? `\n\n【起卦资料 · 无经度】${geoFrom}\n→ 本次**没有**经度：调用 divine 时**不要**填 longitude，也不要用手机号/城市名等猜一个顶替；结果里会如实标「未做真太阳时校正」。`
+                : '')
+
+            // ── 多轮续接（task-23）：带 sessionId 就接进**同一个会话**，否则新建 ──
+            // 面板第一轮不带 sessionId（新建），后续轮带上一轮返回的那个。
+            // ⚠ 过期/不存在/上一轮未结束，都**如实回报**，绝不静默新建 ——
+            //   静默新建会让两个不同会话并到一起（用户会发现"它忘了我说过的话"却查不出原因）。
+            const wantSid = typeof body.sessionId === 'string' && body.sessionId.trim() !== ''
+              ? body.sessionId.trim()
+              : (typeof body.sid === 'string' ? body.sid.trim() : '')
+            const userText = question + geoHint
+            let useSid = ''
+            let st
+            if (wantSid !== '') {
+              st = AGENT_SESSIONS.get(wantSid)
+              if (!st) {
+                return json({ ok: false, code: 'stale-session', error: '会话不存在或已过期（服务重启，或超过 6 小时未说话）。请开始新对话。' }, 409)
+              }
+              if (st.done !== true) {
+                return json({ ok: false, code: 'busy-session', error: '上一轮还没说完，等它出结果再发下一条。' }, 409)
+              }
+              useSid = wantSid
+              st.messages.push({ role: 'user', content: [{ type: 'text', text: userText }] })
+              st.at = Date.now()
+              // 每轮重置的是「这一轮的进度与结果」，**不是**会话历史（会话继续存活）
+              st.steps = []
+              st.error = ''
+              st.phase = ''
+              st.judgment = ''
+              st.picked = false
+              st.turn = (Number.isFinite(st.turn) ? st.turn : 1) + 1
+            } else {
+              st = {
+                question,
+                messages: [{ role: 'user', content: [{ type: 'text', text: userText }] }],
+                steps: [],
+                searches: 0,
+                at: now,
+                turn: 1,
+                picked: false,
+                // conversation=true（新面板）→ 会话跨轮保留；缺省（旧行为）→ 结果取走后释放。
+                conversation: body.conversation === true,
+              }
+              useSid = `ag-${now.toString(36)}-${Math.floor(Math.random() * 1e6).toString(36)}`
+              AGENT_SESSIONS.set(useSid, st)
             }
-            const useSid = `ag-${now.toString(36)}-${Math.floor(Math.random() * 1e6).toString(36)}`
-            AGENT_SESSIONS.set(useSid, st)
 
             try {
               // ⭐ **不 await**：把整轮放到后台跑，立刻把 sid 还给面板，
@@ -1708,15 +1910,25 @@ export function apply(ctx, config) {
                 st.done = true
                 st.state = 'error'
               })
-              return json({ ok: true, sid: useSid, state: 'running', steps: st.steps, phase: st.phase ?? '' })
+              return json({
+                ok: true,
+                sid: useSid,
+                sessionId: useSid,
+                turn: st.turn ?? 1,
+                state: 'running',
+                steps: st.steps,
+                phase: st.phase ?? '',
+              })
             } catch (err) {
-              AGENT_SESSIONS.delete(useSid)
+              // 多轮会话不要因为一次起轮失败就整个丢掉历史（那是用户说过的所有话）
+              if (st.conversation !== true) AGENT_SESSIONS.delete(useSid)
               const raw = err?.message ?? String(err)
               const aborted = request.signal?.aborted === true || /abort/i.test(raw)
               logLine(ctx, 'warn', `[dsh-divination-108] agent 失败：${raw}`)
               return json({
                 ok: false,
                 sid: useSid,
+                sessionId: useSid,
                 error: aborted ? '求占被中断（可重试）' : raw,
                 steps: st.steps,
               }, 502)

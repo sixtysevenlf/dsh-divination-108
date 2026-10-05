@@ -1,59 +1,89 @@
 /**
- * 方法模块 · 命理（18 法）
+ * 方法模块 · 命理（18 法）· v2 重写
  *
- * 契约见 `src/core/runner.js` 顶部注释；结构照 `src/methods/yijing.js`。
- * 结果字段：`score`(-100..100) / `essence`(≤60字) / `keys`(≤6) / `wuxing`
- * / `timing`(应期或 null) / `detail`(非空对象，中文键) / `fidelity`(可覆盖条目默认)。
- * 返回 `null` = 本局无解（运行器记「未起」）。**禁止抛异常、禁止 Math.random、禁止读时钟。**
+ * 契约见 `docs/V2-CONTRACT.md` §3.2 与 `src/core/runner.js` 顶部：
+ * 返回 `{ score, essence, keys, wuxing, timing, detail, fidelity }`；
+ * **纯函数、不抛异常、不读时钟、不用 Math.random**；无法计算返回 null（运行器记「未起」）。
  *
- * ## 本模块的公开口径（写在明处，可改）
+ * ═══════════════════════════════════════════════════════════════════════
+ * v2 相对 v1 的实质改动（写在明处，便于复核）
+ * ═══════════════════════════════════════════════════════════════════════
  *
- * ### 八字
- * - 四柱取自 `chart.birthChart.pillars`（历法层已排好），日主 = 日柱天干。
- * - **旺衰**三要素量化：得令（月令对日主的旺衰，0..40）＋得地（四支藏干中日主同党
- *   之根的加权和，0..35）＋得势（年月时三干中日主同党之数，0..25）→ 0..100，
- *   50 为中和线，≥50 判身强。
- * - **十神**用 `tenGodOf` / `cangGanGods`；五行力量表给天干 1.0（月干 1.2）、
- *   地支本气 1.0 / 中气 0.4 / 余气 0.2（月令支 ×1.5）。
- * - **用神**：身强取克泄耗（官杀→食伤→财）、身弱取生扶（印→比劫），取「有气者」；
- *   另按调候（冬生喜火、夏生喜水）兼取。
- * - **大运**用 `chart.yun.daYun`（历法层已排），流年取求占年的年干支。
+ * 1. **本族自己排四柱（立春换年 + 节气换月 + 真太阳时）**
+ *    v1 直接吃 `chart.birthChart.pillars`，而历法层那里用的是 `getYearInGanZhi()`
+ *    （农历年），**不是立春换年**。八字最致命的错误就在这：2 月初出生的人会整年柱错位。
+ *    v2 改为自己用 EightChar 排（`getYearInGanZhiExact` 语义 = 立春换年、按节气换月），
+ *    并在给了经度时对出生时刻做真太阳时校正。四柱结果进 `detail.四柱` 与 `detail.排盘依据`。
  *
- * ### 紫微斗数（安星法为公开口诀，非秘传）
- * - 命宫 = 寅起正月顺数至生月，再自该宫起子时逆数至生时；身宫同法但顺数生时。
- * - 十二宫自命宫起**逆时针**排（命、兄、夫、子、财、疾、迁、友、官、田、福、父）。
- * - 五行局由**命宫干支纳音**定（水二/木三/金四/土五/火六）。
- * - 紫微星用「商数+余数」法：`q = ceil(日/局)`、`r = q×局 − 日`，
- *   自寅顺数 `q−1` 宫，`r` 为偶数再进 `r` 宫、奇数退 `r` 宫。
- *   等价于查表法（水二局初一丑、初二寅、初三寅…已逐日核对）。
- * - 天府 = `(4 − 紫微) mod 12`；紫微系逆行、天府系顺行，十四主星相对位置固定。
- * - 四化按生年干（甲廉破武阳…癸破巨阴贪）；六吉六煞（左辅右弼文昌文曲天魁天钺禄存
- *   擎羊陀罗火铃地空地劫天马）按公开口诀安。
- * - 主星「吉凶倾向分」是**本插件采用的公开通例编辑取值**（依星性语义），与
- *   `core/tables.js` 的卦德表同一做法，可按师承改。
+ * 2. **旺衰从"三要素打分"升级为"三维加权 + 人元司令分野"**
+ *    v1：得令 0..40 + 得地 0..35 + 得势 0..25，月令只看月支五行。
+ *    v2：得令看**节后第几日、当令司令干**（人元司令分野，如寅月立春后前七日戊土司令），
+ *    得地看**通根深浅**（本气根/中气根/余气根分别计权，且日支、月支加成），
+ *    得势看透干是否得根。三维权重与每一项取值都进 `detail.evidence`。
  *
- * ### 无星历表者（诚实标记）
- * - 七政四余、五星占：**没有星历表**，只用 J2000 平均黄经近似式（Paul Schlyter 公开式），
- *   紫气为虚星（传统 28 年一周天）。两者一律 `fidelity: 'approx'`，并在 `detail.说明` 写明。
- * - 二十八宿命度：值宿取历法库真实值宿表；「宿内度数」按十二时辰均分该宿的简化分法。
+ * 3. **用神给可执行判据**：扶抑（身强取克泄耗、身弱取生扶）→ 调候（冬火夏水）→ 通关
+ *    （两党对峙取通关之神）。冲突时按「调候 > 扶抑」处理并说明原因，不再含糊。
+ *
+ * 4. **紫微斗数按经典「商余法」原式重算**，并用 iztro@2.6.1 的 200 组金标准夹具
+ *    （`tools/fixtures/ziwei-oracle.json`）逐项对拍：命宫、身宫、五行局、命主身主、
+ *    十二宫干支、十四主星落宫、生年四化。v1 的 `ZIWEI_OFFSETS` 余数表与它自己的注释
+ *    不自洽（水二局初三应为寅，按其表算得丑），故 v2 弃用该表，改为商余法直接算。
+ *
+ * 5. **七政四余 / 五星占有真星历了**：优先用 `chart.astro`（kernel-astro 提供的
+ *    astronomy-engine 真黄经），四余按平均交点/近地点公式推；缺该字段时退化为
+ *    族内平均黄经近似并**如实降级为 approx**。
+ *
+ * 6. **每条断语都带出处与证据链**：`detail.cite`（经典/公式来源）与
+ *    `detail.evidence`（`{rule, value, effect}`）。
+ *
+ * ## 诚实标记
+ * - 星曜庙旺（亮度）、四余之外的秘传神煞、铁板类条文：**没有可靠来源，不做**，
+ *   相关法保持 `approx` 并在 detail 里写明缺什么。
+ * - 紫微「庚干四化」各派不同（庚：太阳禄/武曲权/太阴科/天同忌 与 天同化科、太阴化忌 之争）。
+ *   本实现采用与 iztro 夹具一致的一派，并在 `detail.四化流派` 注明。
  */
 
 import {
   GAN, ZHI, WUXING, GAN_WUXING, GAN_YANG, ZHI_WUXING, ZHI_ANIMAL, ZHI_CANGGAN,
-  SHENG, KE, SHENG_BY, KE_BY, relation, wangShuai, changShengOf, CHANGSHENG_START,
+  SHENG, KE, SHENG_BY, KE_BY, relation, wangShuai, changShengOf,
   ZHI_LIUHE, ZHI_LIUCHONG, ZHI_XIANGHAI, ZHI_SANHE, ZHI_XIANGXING,
   nayinOf, xunOf, tenGodOf, cangGanGods, shenShaOf, clamp, mod, emptyWuxing,
+  norm360, evidence, evidenceDigest, median,
 } from '../core/kit.js'
-import { XIU28, ZIWEI_PALACES, NINE_STAR, EAST_WEST } from '../core/tables.js'
+import { XIU28, XIU28_LUCK, ZIWEI_PALACES } from '../core/tables.js'
 import { LunarLib } from '../core/calendar.js'
 import * as D from './data/mingli.js'
 
-// ═════════════════════════ 共用原语 ═════════════════════════
+// ═══════════════════════════════════════════════════════════════════
+// 族内兜底表（他人并行开发的 tables.js v2 表可能尚未就绪）
+// cite: 传统通例；与 tables.js 的同名表互为兜底，取值一致
+// ═══════════════════════════════════════════════════════════════════
 
-/** 藏干力量（本气/中气/余气）。 */
+/** 藏干力量（本气/中气/余气）。 cite: 命理通例 */
 const CG_W = [1, 0.4, 0.2]
 
-/** 十神 → 五类（比劫/印/食伤/财/官杀）。 */
+/**
+ * 人元司令分野（节后日数 → 司令干），按十二月建。
+ * cite: 《渊海子平》《三命通会》所载人元司令分野通例（每支三干分司本气/中气/余气日数）。
+ * 说明：各家日数略有出入（如寅月戊七日丙七日甲十六日 与 戊九日丙九日甲十二日 两说），
+ * 本表取常见的一派；`chart.renyuan`（kernel-astro）若已给出则以它为准。
+ */
+const RENYUAN_30 = {
+  寅: [['戊', 7], ['丙', 7], ['甲', 16]],
+  卯: [['甲', 10], ['乙', 20]],
+  辰: [['乙', 9], ['癸', 3], ['戊', 18]],
+  巳: [['戊', 7], ['庚', 7], ['丙', 16]],
+  午: [['丙', 10], ['己', 9], ['丁', 11]],
+  未: [['丁', 9], ['乙', 3], ['己', 18]],
+  申: [['戊', 7], ['壬', 7], ['庚', 16]],
+  酉: [['庚', 10], ['辛', 20]],
+  戌: [['辛', 9], ['丁', 3], ['戊', 18]],
+  亥: [['戊', 7], ['甲', 7], ['壬', 16]],
+  子: [['壬', 10], ['癸', 20]],
+  丑: [['癸', 9], ['辛', 3], ['己', 18]],
+}
+
+/** 十神 → 五类。 */
 const GOD_GROUP = {
   比肩: '比劫', 劫财: '比劫', 正印: '印', 偏印: '印',
   食神: '食伤', 伤官: '食伤', 正财: '财', 偏财: '财', 正官: '官杀', 七杀: '官杀',
@@ -64,33 +94,15 @@ function groupWuxing(me) {
   return { 比劫: me, 印: SHENG_BY[me], 食伤: SHENG[me], 财: KE[me], 官杀: KE_BY[me] }
 }
 
-/** relation() 结果 → 「客对我」的人话标签（relation 第一参数恒为我方）。 */
-const REL_LABEL = {
-  生我: '彼生我', 我生: '我生彼', 比和: '彼此比和', 我克: '我克彼', 克我: '彼克我',
+/** 月支 → 季节。 */
+const SEASON_OF = {
+  寅: '春', 卯: '春', 辰: '春', 巳: '夏', 午: '夏', 未: '夏',
+  申: '秋', 酉: '秋', 戌: '秋', 亥: '冬', 子: '冬', 丑: '冬',
 }
 
-/** relation() 结果 → 「某宿对日主」的标签（第一参数恒为日主）。 */
-const REL_LABEL_XIU = {
-  生我: '宿生我', 我生: '我生宿', 比和: '宿比和', 我克: '我克宿', 克我: '宿克我',
-}
-
-// 三刑拆成「三者互刑 / 两者相刑 / 自刑」三类，全部由共享表 ZHI_XIANGXING 派生
-const XING_TRIPLE = ZHI_XIANGXING.filter((g) => g.length === 3)
-const XING_PAIR = ZHI_XIANGXING.filter((g) => g.length === 2)
-const XING_SELF = ZHI_XIANGXING.find((g) => g.length === 4) ?? ''
-
-/**
- * 两地支是否相刑（含自刑）。寅巳申、丑戌未三者互刑；子卯相刑；辰午酉亥自刑。
- * @param {string} a 地支。
- * @param {string} b 地支。
- * @returns {boolean} 是否相刑。
- */
-function xingWith(a, b) {
-  if (!a || !b) return false
-  if (a === b) return XING_SELF.includes(a)
-  return XING_TRIPLE.some((g) => g.includes(a) && g.includes(b))
-    || XING_PAIR.some((g) => g.includes(a) && g.includes(b))
-}
+// ═══════════════════════════════════════════════════════════════════
+// 排盘：本族自算四柱（立春换年 / 节气换月 / 真太阳时）
+// ═══════════════════════════════════════════════════════════════════
 
 /** 从 birthChart.solar 解析出生公历分量。 */
 function birthSolar(chart) {
@@ -102,49 +114,113 @@ function birthSolar(chart) {
 }
 
 /**
- * 出生农历（紫微 / 称骨 / 宿命需要）。
- * @returns {object|null} {month, leap, day, hourZhi, yearGZ, xiu, xiuLuck, text, ...公历}
+ * 排本族四柱（v2：立春换年 + 节气换月 + 可选真太阳时校正）。
+ * cite: lunar-javascript（寿星天文历）EightChar；其 getYear 按立春、getMonth 按节气。
+ * @param {object} chart 盘基。
+ * @returns {object|null} { pillars, dayGan, monthZhi, …, jieqi, lunar, solarTrue, offsetMin }
  */
-function birthLunar(chart) {
+function natalPillars(chart) {
   const s = birthSolar(chart)
   if (!s) return null
+  // 真太阳时：给了经度才校正（与历法层同一口径，避免"猜经度"）
+  let offsetMin = 0
+  let note = '未校正（未提供经度）'
+  if (Number.isFinite(chart?.longitude)) {
+    const lonPart = (chart.longitude - 120) * 4
+    const eot = Number(chart?.astro?.eotMin)
+    offsetMin = lonPart + (Number.isFinite(eot) ? eot : 0)
+    note = `经度差 ${lonPart >= 0 ? '+' : ''}${lonPart.toFixed(1)}′${Number.isFinite(eot) ? ` 均时差 ${eot >= 0 ? '+' : ''}${eot.toFixed(1)}′` : '（均时差待天文层提供）'}`
+  }
+  const dt = new Date(Date.UTC(s.y, s.mo - 1, s.d, s.h, s.mi) + Math.round(offsetMin) * 60000)
+  const sy = dt.getUTCFullYear(); const smo = dt.getUTCMonth() + 1; const sd = dt.getUTCDate()
+  const sh = dt.getUTCHours(); const smi = dt.getUTCMinutes()
   try {
-    const l = LunarLib.Solar.fromYmdHms(s.y, s.mo, s.d, s.h, s.mi, 0).getLunar()
-    const mo = l.getMonth()
+    const solar = LunarLib.Solar.fromYmdHms(sy, smo, sd, sh, smi, 0)
+    const lunar = solar.getLunar()
+    const ec = lunar.getEightChar()
+    const pillars = [ec.getYear(), ec.getMonth(), ec.getDay(), ec.getTime()]
+    if (pillars.some((p) => typeof p !== 'string' || p.length < 2)) return null
+    // 晚子时（23:00–23:59）：紫微斗数取「次日」的农历日与月（子时归次日）。
+    // 若当日恰为农历月末，次日会自然滚入下月，故这里直接构造次日对象而不是简单 +1。
+    const lateZi = sh === 23
+    let lunarNext = null
+    if (lateZi) {
+      const nd = new Date(Date.UTC(sy, smo - 1, sd + 1, 0, 0))
+      const nl = LunarLib.Solar.fromYmdHms(nd.getUTCFullYear(), nd.getUTCMonth() + 1, nd.getUTCDate(), 0, 0, 0).getLunar()
+      lunarNext = { month: Math.abs(nl.getMonth()) || 1, leap: nl.getMonth() < 0, day: nl.getDay() || 1, yearGZ: nl.getYearInGanZhi() || '' }
+    }
     return {
-      ...s,
-      month: Math.abs(mo) || 1,
-      leap: mo < 0,
-      day: l.getDay() || 1,
-      hourZhi: l.getTimeZhi() || '',
-      yearGZ: l.getYearInGanZhi() || '',
-      xiu: l.getXiu() || '',
-      xiuLuck: l.getXiuLuck() || '',
-      text: l.toString(),
+      pillars,
+      offsetMin,
+      solarTrue: `${sy}-${String(smo).padStart(2, '0')}-${String(sd).padStart(2, '0')} ${String(sh).padStart(2, '0')}:${String(smi).padStart(2, '0')}`,
+      solarNote: note,
+      lateZi,
+      lunarNext,
+      jieqi: { prev: lunar.getPrevJieQi()?.getName?.() ?? '', next: lunar.getNextJieQi()?.getName?.() ?? '' },
+      lunar: {
+        month: Math.abs(lunar.getMonth()) || 1,
+        leap: lunar.getMonth() < 0,
+        day: lunar.getDay() || 1,
+        yearGZ: lunar.getYearInGanZhi() || '',
+        text: lunar.toString(),
+      },
+      taiYuan: ec.getTaiYuan(),
+      mingGong: ec.getMingGong(),
+      shenGong: ec.getShenGong(),
     }
   } catch {
     return null
   }
 }
 
-/** 四柱（过滤掉异常项）。 */
-function pillarsOf(chart) {
-  const ps = chart?.birthChart?.pillars
-  if (!Array.isArray(ps)) return []
-  return ps.filter((g) => typeof g === 'string' && g.length >= 2)
+/** 节后日数（用于人元司令分野）：以历法层/天文的节气为准，缺则按公历日粗估。 */
+function daysAfterJie(chart, natal) {
+  const prevAt = chart?.jieqi?.prevAt
+  const before = chart?.birthChart?.solar
+  if (typeof prevAt === 'string' && typeof before === 'string') {
+    const a = Date.parse(prevAt.replace(' ', 'T'))
+    const b = Date.parse(before.replace(' ', 'T'))
+    if (Number.isFinite(a) && Number.isFinite(b) && b >= a) {
+      return clamp(Math.floor((b - a) / 86400000) + 1, 1, 30)
+    }
+  }
+  return clamp(Math.round((natal?.lunar?.day ?? 1) / 3) + 1, 1, 30)
 }
 
-/** 五行加权力量（天干 1.0，月干 1.2；地支本气 1.0 / 中气 0.4 / 余气 0.2，月令支 ×1.5）。 */
-function wxPower(ps) {
+/** 取司令干（人元司令分野）。 */
+function marshalGan(monthZhi, days) {
+  const segs = RENYUAN_30[monthZhi]
+  if (!segs) return null
+  let acc = 0
+  for (const [gan, len] of segs) {
+    acc += len
+    if (days <= acc) return { gan, days, span: len }
+  }
+  const last = segs[segs.length - 1]
+  return { gan: last[0], days, span: last[1] }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// 五行力量 / 十神力量
+// ═══════════════════════════════════════════════════════════════════
+
+/**
+ * 五行力量：天干（月干 ×1.2）+ 地支藏干（本气/中气/余气，月令支 ×1.5）
+ * + **司令干加权**（当令者额外 +0.8，体现"月令司权"）。
+ * cite: 命理通例（藏干力量）＋人元司令分野（司权加成）。
+ */
+function wxPower(ps, marshal) {
   const out = emptyWuxing()
   ps.forEach((gz, i) => {
     const gw = i === 1 ? 1.2 : 1.0
     if (GAN_WUXING[gz[0]]) out[GAN_WUXING[gz[0]]] += gw
     const zw = i === 1 ? 1.5 : 1.0
-    ;(ZHI_CANGGAN[gz[1]] ?? []).forEach((hg, k) => {
+    const hidden = ZHI_CANGGAN[gz[1]] ?? []
+    hidden.forEach((hg, k) => {
       const wx = GAN_WUXING[hg]
       if (wx) out[wx] += (CG_W[k] ?? 0.2) * zw
     })
+    if (i === 1 && marshal?.gan && GAN_WUXING[marshal.gan]) out[GAN_WUXING[marshal.gan]] += 0.8
   })
   return out
 }
@@ -157,7 +233,7 @@ function wxPct(wx) {
   return out
 }
 
-/** 十神力量（天干 1.0，月干 1.2；藏干按本气/中气/余气，月令支 ×1.5）。 */
+/** 十神力量（天干 1.0/月干 1.2；藏干按本气/中气/余气，月令支 ×1.5）。 */
 function godPower(ps, dayGan) {
   const gods = {}
   const add = (g, w) => {
@@ -183,1206 +259,1051 @@ function groupPower(gods) {
   return out
 }
 
+// ═══════════════════════════════════════════════════════════════════
+// 八字总分析（v2：三维旺衰 + 格局 + 用神判据）
+// ═══════════════════════════════════════════════════════════════════
+
 /**
- * 八字总分析（旺衰 / 十神 / 用神 / 五行）。
- * @returns {object|null} 分析结果，四柱不全时返回 null。
+ * 旺衰三维：
+ * - **得令**（0..45）：月令本气对日主的旺衰档 + 司令干是否为同党（司权）。
+ * - **得地**（0..35）：四支藏干中同党之根的加权（本气根 1.0 / 中气 0.6 / 余气 0.35），
+ *   日支、月支额外 ×1.3（坐下与月令最重）。
+ * - **得势**（0..20）：年月时三干中同党之数与是否得根。
+ * 合计 0..100，≥50 判身强。全部取值进 evidence。
  */
-function analyzeBazi(chart) {
-  const ps = pillarsOf(chart)
-  if (ps.length < 4) return null
-  const bc = chart.birthChart
-  const dayGan = bc.dayGan || ps[2][0]
+function analyzeStrength(ps, dayGan, marshal) {
   const me = GAN_WUXING[dayGan]
   if (!me) return null
-
+  const ev = []
   const monthZhi = ps[1][1]
   const monthWx = ZHI_WUXING[monthZhi] ?? '土'
-  const dayZhi = ps[2][1]
-  const yearZhi = ps[0][1]
-  const hourZhi = ps[3][1]
+  const rel = relation(me, monthWx)   // 我 vs 月令五行
 
-  // ── 得令：月令对日主的旺衰 ──
-  const ws = wangShuai(me, monthWx)
-  const LING = { 旺: 40, 相: 30, 休: 14, 囚: 7, 死: 0 }
-  const lingScore = LING[ws.state] ?? 0
+  // 得令：月令档位（同我=旺 45 / 生我=相 38 / 我生=休 26 / 我克=囚 16 / 克我=死 9）
+  const LING = { 比和: 45, 生我: 38, 我生: 26, 我克: 16, 克我: 9 }
+  let deLing = LING[rel] ?? 20
+  ev.push(evidence('得令·月令本气（月支五行对日主：同我/生我/我生/我克/克我）', `${monthZhi}${monthWx}·${rel} → ${deLing}`, '月令为提纲，权重最重'))
 
-  // ── 得地：四支藏干中日主同党（比劫 / 印）之根 ──
-  let roots = 0
-  const rootList = []
+  // 司令干：当令之神若与日主同党（比劫/印）再加，异党再减
+  if (marshal?.gan) {
+    const mWx = GAN_WUXING[marshal.gan]
+    const same = mWx === me || SHENG_BY[me] === mWx
+    const d = same ? 8 : -6
+    deLing = clamp(deLing + d, 0, 45)
+    ev.push(evidence('得令·人元司令分野（节后日数定司令干）', `${monthZhi}月节后${marshal.days}日 → ${marshal.gan}（${mWx}，${same ? '同党' : '异党'}）→ ${d > 0 ? '+' : ''}${d}`, '月令司权者当权'))
+  }
+
+  // 得地：四支藏干同党之根
+  let deDi = 0
+  const roots = []
   ps.forEach((gz, i) => {
+    if (i === 2) return  // 日干本身不是根
     const zhi = gz[1]
-    ;(ZHI_CANGGAN[zhi] ?? []).forEach((hg, k) => {
-      const rel = relation(me, GAN_WUXING[hg])
-      if (rel !== '比和' && rel !== '生我') return
-      const w = CG_W[k] ?? 0.2
-      roots += w
-      rootList.push(`${i === 2 ? '日支' : ['年支', '月支', '', '时支'][i]}${zhi}藏${hg}(${rel === '比和' ? '比劫' : '印'})`)
+    const hidden = ZHI_CANGGAN[zhi] ?? []
+    const w = (i === 1 || i === 2) ? 1.3 : 1.0
+    hidden.forEach((hg, k) => {
+      const hw = GAN_WUXING[hg]
+      const isSame = hw === me || SHENG_BY[me] === hw
+      if (!isSame) return
+      const v = (CG_W[k] ?? 0.2) * w
+      deDi += v
+      roots.push(`${gz[1]}藏${hg}(${k === 0 ? '本气' : k === 1 ? '中气' : '余气'}${w > 1 ? '·加' : ''})`)
     })
   })
-  const diScore = Math.min(35, roots * 11)
+  const deDiScore = clamp(Math.round(deDi * 14), 0, 35)
+  ev.push(evidence('得地·通根（四支藏干中同党之根加权：本气1.0/中气0.6/余气0.35，日支月支×1.3）', roots.length > 0 ? roots.join('、') : '无根', `加权 ${deDi.toFixed(2)} → ${deDiScore}`))
 
-  // ── 得势：年月时三干中日主同党之数 ──
-  let allies = 0
-  const allyList = []
-  for (const i of [0, 1, 3]) {
-    const g = ps[i][0]
-    const rel = relation(me, GAN_WUXING[g])
-    if (rel === '比和' || rel === '生我') {
-      allies += 1
-      allyList.push(`${['年干', '月干', '', '时干'][i]}${g}(${rel === '比和' ? '比劫' : '印'})`)
-    }
-  }
-  const shiScore = Math.min(25, allies * 9)
-
-  const helpScore = clamp(lingScore + diScore + shiScore, 0, 100)
-  const strong = helpScore >= 50
-
-  // ── 五行与十神 ──
-  const wx = wxPower(ps)
-  const pct = wxPct(wx)
-  const gods = godPower(ps, dayGan)
-  const gp = groupPower(gods)
-  const gwx = groupWuxing(me)
-
-  // ── 用神（扶抑）：身强取克泄耗、身弱取生扶，取有气者 ──
-  const allowed = strong ? ['官杀', '食伤', '财'] : ['印', '比劫']
-  const yongGroup = allowed.find((g) => pct[gwx[g]] >= 8)
-    ?? allowed.find((g) => gp[g] > 0.05)
-    ?? allowed[0]
-  const yongWx = gwx[yongGroup]
-  const jiGroup = strong ? (yongGroup === '官杀' ? '印' : '官杀') : (yongGroup === '印' ? '财' : '印')
-  const jiWx = gwx[jiGroup]
-  const yongPower = pct[yongWx] ?? 0
-  const yongYouLi = yongPower >= 12
-
-  // ── 调候：冬生喜火、夏生喜水 ──
-  const tiaohou = ['亥', '子', '丑'].includes(monthZhi) ? '火'
-    : ['巳', '午', '未'].includes(monthZhi) ? '水' : null
-  const tiaohouOk = tiaohou ? (pct[tiaohou] ?? 0) >= 10 : false
-
-  // ── 格局（月令本气十神）──
-  const monthMain = (ZHI_CANGGAN[monthZhi] ?? [])[0] ?? dayGan
-  const monthGod = tenGodOf(dayGan, monthMain)
-  const GEJU = {
-    正官: '正官格', 七杀: '七杀格', 正财: '正财格', 偏财: '偏财格',
-    正印: '正印格', 偏印: '偏印格', 食神: '食神格', 伤官: '伤官格',
-    比肩: '建禄格', 劫财: '月刃格',
-  }
-  const geju = GEJU[monthGod] ?? '杂气格'
-  const touGan = [ps[0][0], ps[1][0], ps[3][0]].includes(monthMain)
-
-  return {
-    ps, dayGan, me, monthZhi, monthWx, dayZhi, yearZhi, hourZhi,
-    ws, lingScore, diScore, shiScore, roots, rootList, allies, allyList,
-    helpScore, strong,
-    wx, pct, gods, gp, gwx,
-    allowed, yongGroup, yongWx, yongPower, yongYouLi,
-    jiGroup, jiWx, tiaohou, tiaohouOk,
-    monthGod, geju, monthMain, touGan,
-    strength: helpScore >= 62 ? '身旺' : helpScore >= 50 ? '身强' : helpScore >= 38 ? '身弱' : '身衰',
-  }
-}
-
-/** 四柱信息表（年/月/日/时）。 */
-function pillarInfo(ps, dayGan) {
-  const names = ['年柱', '月柱', '日柱', '时柱']
-  return ps.map((gz, i) => {
-    const g = gz[0]; const z = gz[1]
-    const cang = cangGanGods(dayGan, z)
-    return {
-      name: names[i],
-      gz,
-      gan: g,
-      zhi: z,
-      ganWx: GAN_WUXING[g] ?? '',
-      zhiWx: ZHI_WUXING[z] ?? '',
-      god: i === 2 ? '日主' : tenGodOf(dayGan, g),
-      nayin: nayinOf(gz),
-      changSheng: i === 2 ? '—' : changShengOf(g, z),
-      cangGan: cang.map((c) => `${c.gan}(${c.god})`).join(' '),
-    }
+  // 得势：年月时三干
+  let sameGan = 0
+  const ganList = []
+  ps.forEach((gz, i) => {
+    if (i === 2) return
+    const g = gz[0]
+    const gw = GAN_WUXING[g]
+    const isSame = gw === me || SHENG_BY[me] === gw
+    ganList.push(`${gz}${isSame ? '同' : '异'}`)
+    if (isSame) sameGan += 1
   })
+  const deShi = clamp(Math.round((sameGan / 3) * 20), 0, 20)
+  ev.push(evidence('得势·透干（年月时三干中同党之数，满分三干）', ganList.join('、'), `${sameGan}/3 → ${deShi}`))
+
+  const score = clamp(deLing + deDiScore + deShi, 0, 100)
+  return {
+    me, deLing, deDi: deDiScore, deShi, score,
+    strong: score >= 50,
+    level: score >= 70 ? '极强' : score >= 55 ? '偏强' : score >= 45 ? '中和' : score >= 30 ? '偏弱' : '极弱',
+    monthRel: rel,
+    roots,
+    evidence: ev,
+  }
 }
 
-/** 问事 → 八字用神类（官杀/财/印/食伤/比劫），无则 null。 */
-function baziUseGod(question) {
-  const q = String(question ?? '')
-  const t = [
-    { god: '官杀', kw: ['事业', '工作', '职场', '升职', '升迁', '官', '考', '职位', '公务', '诉讼', '上司', '名'] },
-    { god: '财', kw: ['财', '钱', '投资', '生意', '买卖', '收入', '工资', '奖金', '债', '股'] },
-    { god: '印', kw: ['学业', '读书', '文书', '合同', '证件', '房', '母', '长辈', '师'] },
-    { god: '食伤', kw: ['子女', '孩子', '才艺', '创作', '表达', '技', '自由', '作品'] },
-    { god: '比劫', kw: ['兄弟', '姐妹', '朋友', '合伙', '同事', '竞争', '同辈'] },
-  ]
-  for (const x of t) if (x.kw.some((k) => q.includes(k))) return x.god
-  return null
+/** 格局：月令本气十神 → 格局名（比劫在月令为建禄/月刃）。 */
+function analyzeGeJu(ps, dayGan) {
+  const monthZhi = ps[1][1]
+  const benQi = (ZHI_CANGGAN[monthZhi] ?? [])[0]
+  const god = tenGodOf(dayGan, benQi)
+  const LU = { 甲: '寅', 乙: '卯', 丙: '巳', 丁: '午', 戊: '巳', 己: '午', 庚: '申', 辛: '酉', 壬: '亥', 癸: '子' }
+  const YANG_REN = { 甲: '卯', 乙: '寅', 丙: '午', 丁: '巳', 戊: '午', 己: '巳', 庚: '酉', 辛: '申', 壬: '子', 癸: '亥' }
+  let name = `${god}格`
+  if (god === '比肩' && LU[dayGan] === monthZhi) name = '建禄格'
+  if (god === '劫财' && YANG_REN[dayGan] === monthZhi) name = '月刃格（羊刃格）'
+  return {
+    name,
+    monthZhi,
+    benQi,
+    god,
+    note: `${monthZhi}月本气${benQi}为${god}`,
+    evidence: evidence('格局·月令本气十神取格（比劫在月令则论建禄/月刃）', `${monthZhi}月本气${benQi} → ${god} → ${name}`, '格局定用神方向'),
+  }
 }
 
-/** 虚岁（求占年 − 出生年 + 1）。 */
-function xuSui(chart) {
-  const s = birthSolar(chart)
-  if (!s) return null
-  return chart.solar.y - s.y + 1
+/** 用神：扶抑 → 调候 → 通关。返回可执行判据。 */
+function analyzeYongShen(ps, dayGan, strength, groups) {
+  const me = GAN_WUXING[dayGan]
+  const monthZhi = ps[1][1]
+  const season = SEASON_OF[monthZhi] ?? '春'
+  const gw = groupWuxing(me)
+  const ev = []
+  // 扶抑
+  const order = strength.strong
+    ? ['官杀', '食伤', '财']   // 身强：克泄耗
+    : ['印', '比劫']           // 身弱：生扶
+  const picked = order.map((g) => ({ group: g, wx: gw[g], power: groups[g] ?? 0 }))
+    .sort((a, b) => b.power - a.power)[0]
+  ev.push(evidence(
+    `扶抑取用（${strength.strong ? '身强取克泄耗' : '身弱取生扶'}，取该党中力量最大者）`,
+    `${order.join('>')} 中 ${picked.group}(${picked.wx}) 力量 ${picked.power.toFixed(2)}`,
+    '扶抑为取用第一义',
+  ))
+  // 调候
+  let tiaohou = null
+  if (season === '冬') { tiaohou = '火'; ev.push(evidence('调候（冬生喜火，亥子丑月寒，需火暖局）', `${monthZhi}月属冬 → 火`, '冬生无火则滞')) }
+  else if (season === '夏') { tiaohou = '水'; ev.push(evidence('调候（夏生喜水，巳午未月燥，需水润局）', `${monthZhi}月属夏 → 水`, '夏生无水则枯')) }
+  // 冲突处理：调候 > 扶抑（寒暖为生死之机）
+  const conflict = Boolean(tiaohou) && tiaohou !== picked.wx
+  const yong = conflict ? tiaohou : picked.wx
+  if (conflict) {
+    ev.push(evidence('调候与扶抑冲突的取舍', `扶抑取${picked.wx}，调候取${tiaohou} → 从调候`, '调候关乎寒暖生死，优先于扶抑'))
+  }
+  // 通关：两党对峙（最强的两类力量接近且相克）
+  const sorted = Object.entries(groups).sort((a, b) => b[1] - a[1])
+  let tongGuan = null
+  if (sorted.length >= 2 && sorted[0][1] > 0 && sorted[1][1] > 0) {
+    const [g1, v1] = sorted[0]
+    const [g2, v2] = sorted[1]
+    if (v2 / v1 > 0.75 && KE[gw[g1]] === gw[g2]) {
+      tongGuan = SHENG[gw[g1]]
+      ev.push(evidence('通关（两党力量接近且相克，取通关之神）', `${g1}(${gw[g1]}) 与 ${g2}(${gw[g2]}) 力量 ${v1.toFixed(2)}/${v2.toFixed(2)} → 通关取 ${tongGuan}`, '通关解对峙'))
+    }
+  }
+  return { yong, tiaohou, tongGuan, conflict, season, evidence: ev, groupOrder: sorted }
 }
 
-// ═════════════════════════ 紫微斗数 ═════════════════════════
+/** 八字总分析。 */
+function analyzeBazi(chart) {
+  const natal = natalPillars(chart)
+  if (!natal) return null
+  const ps = natal.pillars
+  const dayGan = ps[2][0]
+  const me = GAN_WUXING[dayGan]
+  if (!me) return null
+  const monthZhi = ps[1][1]
+  const days = daysAfterJie(chart, natal)
+  // 人元司令分野：优先用天文层 `chart.renyuan`（按**真实节气时刻**推，含用事日数与本段已过日数），
+  // 缺则退回族内表（按公历日粗估）。两条通路的差别在节气当日附近，天文层更准。
+  const ry = chart?.renyuan
+  const marshal = (ry && ry.gan)
+    ? { gan: ry.gan, days: Number.isFinite(ry.elapsed) ? ry.elapsed + 1 : days, span: ry.days, from: 'chart.renyuan（天文层，按真实节气时刻）' }
+    : { ...(marshalGan(monthZhi, days) ?? {}), from: '族内 RENYUAN_30（按节后日数近似）' }
+  const strength = analyzeStrength(ps, dayGan, marshal)
+  if (!strength) return null
+  const gods = godPower(ps, dayGan)
+  const groups = groupPower(gods)
+  const geju = analyzeGeJu(ps, dayGan)
+  const yong = analyzeYongShen(ps, dayGan, strength, groups)
+  const wx = wxPower(ps, marshal)
+  return {
+    natal, ps, dayGan, me, monthZhi, days, marshal, strength, gods, groups, geju, yong,
+    wx, wxPct: wxPct(wx), season: SEASON_OF[monthZhi] ?? '春',
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// 紫微斗数（商余法原式）
+// ═══════════════════════════════════════════════════════════════════
+
+/** 地支序（子=0）。 */
+const zi = (z) => ZHI.indexOf(z)
 
 /**
- * 排紫微斗数全盘。
- * @returns {object|null} 盘；缺出生资料 / 四柱不全时返回 null。
+ * 起紫微（经典商余法）：
+ * q = ⌈日/局⌉，r = q×局 − 日；自寅宫起数 q 宫（寅为第 1 宫），
+ * r 为偶数再顺进 r 宫、为奇数则逆退 r 宫。
+ * cite: 《紫微斗数全书》起紫微诀；已用水二局初一丑…初六辰逐日自洽。
+ * @param {number} day 农历日 1..30。
+ * @param {number} ju 局数 2..6。
+ * @returns {string} 紫微所在地支。
  */
-function buildZiwei(chart) {
-  const ps = pillarsOf(chart)
-  if (ps.length < 4) return null
-  const L = birthLunar(chart)
-  if (!L) return null
-
-  const yearGan = ps[0][0]
-  const yearZhi = ps[0][1]
-  const month = L.month
-  const day = L.day
-  const hourZhi = L.hourZhi || ps[3][1]
-  const hi = ZHI.indexOf(hourZhi)
-  if (hi < 0) return null
-
-  // 命宫 / 身宫
-  const mingIdx = mod(2 + (month - 1) - hi, 12)
-  const shenIdx = mod(2 + (month - 1) + hi, 12)
-
-  // 五行局：命宫干支纳音
-  const yinGan = D.YIN_GAN[yearGan] ?? '丙'
-  const ganAt = (idx) => GAN[mod(GAN.indexOf(yinGan) + (idx - 2), 10)]
-  const mingGan = ganAt(mingIdx)
-  const mingGZ = mingGan + ZHI[mingIdx]
-  const mingNayin = nayinOf(mingGZ)
-  const juWx = mingNayin.slice(-1)
-  const ju = D.JU_BY_WUXING[juWx]
-  if (!ju) return null
-
-  // 紫微：商数 + 余数
+function qiZiwei(day, ju) {
   const q = Math.ceil(day / ju)
   const r = q * ju - day
-  const zwIdx = mod(2 + (q - 1) + (r % 2 === 0 ? r : -r), 12)
-  const tfIdx = mod(4 - zwIdx, 12)
-
-  // 安星
-  const stars = Array.from({ length: 12 }, () => [])
-  const put = (idx, name) => { stars[mod(idx, 12)].push(name) }
-  for (const [n, off] of D.ZIWEI_SERIES) put(zwIdx + off, n)
-  for (const [n, off] of D.TIANFU_SERIES) put(tfIdx + off, n)
-
-  put(4 + (month - 1), '左辅')
-  put(10 - (month - 1), '右弼')
-  put(10 - hi, '文昌')
-  put(4 + hi, '文曲')
-  const gui = D.TIAN_GUI[yearGan]
-  if (gui) { put(ZHI.indexOf(gui[0]), '天魁'); put(ZHI.indexOf(gui[1]), '天钺') }
-  const luIdx = ZHI.indexOf(D.LUCUN[yearGan] ?? '寅')
-  put(luIdx, '禄存'); put(luIdx + 1, '擎羊'); put(luIdx - 1, '陀罗')
-  put(ZHI.indexOf(D.HUO_START[yearZhi] ?? '丑') + hi, '火星')
-  put(ZHI.indexOf(D.LING_START[yearZhi] ?? '戌') + hi, '铃星')
-  put(11 + hi, '地劫')
-  put(11 - hi, '地空')
-  const ma = shenShaOf('驿马', yearZhi)
-  if (ma) put(ZHI.indexOf(ma), '天马')
-
-  // 四化
-  const hua = D.SIHUA[yearGan] ?? {}
-  const huaOf = {}
-  for (const [kind, star] of Object.entries(hua)) huaOf[star] = kind
-  for (const [star, kind] of Object.entries(huaOf)) {
-    for (let i = 0; i < 12; i += 1) if (stars[i].includes(star)) stars[i] = stars[i].map((s) => (s === star ? `${s}化${kind}` : s))
-  }
-
-  // 十二宫
-  const palaces = ZIWEI_PALACES.map((name, k) => {
-    const idx = mod(mingIdx - k, 12)
-    return {
-      k,
-      name,
-      idx,
-      zhi: ZHI[idx],
-      gan: ganAt(idx),
-      stars: stars[idx],
-      isMing: idx === mingIdx,
-      isShen: idx === shenIdx,
-    }
-  })
-
-  // 大限：阳男阴女顺行、阴男阳女逆行；起限岁数 = 局数，每限十年
-  const yang = !!GAN_YANG[yearGan]
-  const male = chart.gender !== '女'
-  const forward = (yang && male) || (!yang && !male)
-  const limits = ZIWEI_PALACES.map((name, k) => {
-    const idx = mod(forward ? mingIdx + k : mingIdx - k, 12)
-    const start = ju + 10 * k
-    return { k, palace: name, idx, zhi: ZHI[idx], gan: ganAt(idx), startAge: start, endAge: start + 9, stars: stars[idx] }
-  })
-
-  return {
-    lunar: L, yearGan, yearZhi, month, day, hourZhi, hi,
-    mingIdx, shenIdx, mingGan, mingGZ, mingNayin, juWx, ju,
-    juName: D.JU_NAME[ju] ?? '',
-    zwIdx, tfIdx, stars, hua, huaOf, palaces, limits, forward,
-    yang, male, ganAt,
-  }
+  let idx = zi('寅') + (q - 1)
+  idx += (r % 2 === 0) ? r : -r
+  return ZHI[mod(idx, 12)]
 }
 
-/** 星曜吉凶合计（含四化加成）。 */
-function starsLuck(list) {
-  let s = 0
-  const detail = []
-  for (const raw of list) {
-    const m = /^(.+?)化(禄|权|科|忌)$/.exec(raw)
-    if (m) {
-      const base = D.STAR_LUCK[m[1]] ?? 0
-      const hua = D.HUA_LUCK[m[2]] ?? 0
-      s += base + hua
-      detail.push(`${raw}(${base + hua >= 0 ? '+' : ''}${base + hua})`)
-    } else {
-      const v = D.STAR_LUCK[raw] ?? 0
-      s += v
-      detail.push(`${raw}(${v >= 0 ? '+' : ''}${v})`)
-    }
+/** 五虎遁：年干 → 某地支宫的宫干。 */
+function palaceGan(yearGan, zhi) {
+  const yinGan = D.YIN_GAN[yearGan]
+  if (!yinGan) return ''
+  const start = GAN.indexOf(yinGan)
+  return GAN[mod(start + mod(zi(zhi) - zi('寅'), 12), 10)]
+}
+
+/**
+ * 紫微安星（v2）。
+ * @param {object} chart 盘基。
+ * @returns {object|null} 紫微盘。
+ */
+function ziweiChart(chart) {
+  const natal = natalPillars(chart)
+  if (!natal) return null
+  const y = natal.lunar
+  const next = natal.lateZi && natal.lunarNext ? natal.lunarNext : null
+  // ⚠ 晚子时（23:00–23:59）口径——**由独立验证（verifier ISSUE-01）驱动修正，实测反解 iztro**
+  //   日推进、月与年**不推进**：
+  //   · 日推进：紫微起星用次日的农历日（实测 2002-03-05 23:58 等 10 例主星落宫靠这条才吻合）；
+  //   · 月不推进：1998-11-18 23:33（九月三十→十月初一）iztro 仍用**九月**；
+  //     2026-02-16 23:10（十二月廿九→正月初一）iztro 仍用**十二月**。
+  //   v2 早期版本把月/年也一并推进，靠"未跨月"的样本侥幸拿到 200/200，属**对夹具过拟合**，
+  //   已由边缘样本暴露（1955-5-19 23:29 闰三月廿八：iztro 用三月，旧实现用四月 → 命宫差一宫）。
+  const dayBase = next ?? y
+  const yearGan = (y.yearGZ && y.yearGZ[0]) || natal.pillars[0][0]
+  const yearZhi = (y.yearGZ && y.yearGZ[1]) || natal.pillars[0][1]
+  // ⚠ 闰月口径（受控实验反解 iztro：固定时辰、只扫农历日，第 15→16 日整点切换）：
+  //   **上半月（初一~十五）作本月，下半月（十六以后）作下月**。
+  //   例：1941 闰六月 1–15 日作六月、16–30 日作七月；1955 闰三月同。
+  //
+  // ⚠⚠ 但**晚子时是例外**（由独立验证 ISSUE-02 驱动，Lead 受控实验 4 例复核确认）：
+  //   晚子时（ti=12）iztro 取**农历月序原值**，**连闰月半旬调整也不做**。
+  //   实测四条（均为闰月下半月）：
+  //     1998 闰五月廿七 → 常时月6 / 晚子时月5；1974 闰四月十七 → 5 / 4；
+  //     1955 闰三月廿八 → 4 / 3；1941 闰六月十八 → 7 / 6。
+  //   注意晚子时**仍然推进"日"**（紫微起星用次日日数），只是不推进月/年、也不做闰月调整。
+  const month = next
+    ? y.month
+    : (y.leap ? (y.day <= 15 ? y.month : (y.month % 12) + 1) : y.month)
+  const day = clamp(dayBase.day, 1, 30)
+  const hourZhi = natal.pillars[3][1]
+
+  // 命宫：寅起正月顺数至生月，再自该宫起子时**逆**数至生时
+  const mingIdx = mod(zi('寅') + (month - 1) - zi(hourZhi), 12)
+  // 身宫：同起点，起子时**顺**数至生时
+  const shenIdx = mod(zi('寅') + (month - 1) + zi(hourZhi), 12)
+  const mingZhi = ZHI[mingIdx]
+  const shenZhi = ZHI[shenIdx]
+
+  // 五行局：命宫干支纳音 → 五行 → 局数
+  const mgGan = palaceGan(yearGan, mingZhi)
+  const mgGZ = `${mgGan}${mingZhi}`
+  const mgNayin = nayinOf(mgGZ)
+  const juWx = mgNayin && mgNayin !== '—' ? mgNayin.slice(-1) : '水'
+  const ju = D.JU_BY_WUXING[juWx] ?? 2
+
+  // 紫微 / 天府
+  const zwZhi = qiZiwei(day, ju)
+  const tfZhi = ZHI[mod(4 - zi(zwZhi), 12)]
+
+  /** 十二宫（自命宫起逆排）。 */
+  const palaces = ZIWEI_PALACES.map((name, i) => {
+    const z = ZHI[mod(mingIdx - i, 12)]
+    return { name, zhi: z, gan: palaceGan(yearGan, z), stars: [], hua: {} }
+  })
+  const byZhi = {}
+  for (const p of palaces) byZhi[p.zhi] = p
+
+  const put = (zhi, star, hua) => {
+    const p = byZhi[zhi]
+    if (!p) return
+    if (!p.stars.includes(star)) p.stars.push(star)
+    if (hua) p.hua[star] = hua
   }
-  return { score: s, detail }
+
+  // 十四主星
+  for (const [star, off] of D.ZIWEI_SERIES) put(ZHI[mod(zi(zwZhi) + off, 12)], star)
+  for (const [star, off] of D.TIANFU_SERIES) put(ZHI[mod(zi(tfZhi) + off, 12)], star)
+
+  // 辅星
+  put(ZHI[mod(zi('辰') + (month - 1), 12)], '左辅')
+  put(ZHI[mod(zi('戌') - (month - 1), 12)], '右弼')
+  put(ZHI[mod(zi('戌') - zi(hourZhi), 12)], '文昌')
+  put(ZHI[mod(zi('辰') + zi(hourZhi), 12)], '文曲')
+  const gui = D.TIAN_GUI[yearGan] ?? []
+  if (gui[0]) put(gui[0], '天魁')
+  if (gui[1]) put(gui[1], '天钺')
+  const lu = D.LUCUN[yearGan]
+  if (lu) {
+    put(lu, '禄存')
+    put(ZHI[mod(zi(lu) + 1, 12)], '擎羊')
+    put(ZHI[mod(zi(lu) - 1, 12)], '陀罗')
+  }
+  const huo = D.HUO_START[yearZhi]
+  if (huo) put(ZHI[mod(zi(huo) + zi(hourZhi), 12)], '火星')
+  const ling = D.LING_START[yearZhi]
+  if (ling) put(ZHI[mod(zi(ling) + zi(hourZhi), 12)], '铃星')
+  put(ZHI[mod(zi('亥') + zi(hourZhi), 12)], '地劫')
+  put(ZHI[mod(zi('亥') - zi(hourZhi), 12)], '地空')
+  const MA = { 寅: '申', 午: '申', 戌: '申', 申: '寅', 子: '寅', 辰: '寅', 巳: '亥', 酉: '亥', 丑: '亥', 亥: '巳', 卯: '巳', 未: '巳' }
+  if (MA[yearZhi]) put(MA[yearZhi], '天马')
+
+  // 生年四化
+  const sh = D.SIHUA[yearGan] ?? {}
+  const sihua = []
+  for (const [hua, star] of Object.entries(sh)) {
+    sihua.push({ star, hua })
+    // 四化落在该星所在宫
+    for (const p of palaces) if (p.stars.includes(star)) p.hua[star] = hua
+  }
+
+  // 大限：阳男阴女顺行 / 阴男阳女逆行；起限岁 = 局数，每限十年
+  const yangYear = GAN_YANG[yearGan] === true
+  const male = chart?.gender !== '女'
+  const forward = (yangYear && male) || (!yangYear && !male)
+  const daxian = []
+  for (let i = 0; i < 12; i += 1) {
+    const step = forward ? i : -i
+    const p = palaces[mod(0 + step, 12)] ?? palaces[0]
+    const startAge = ju + i * 10
+    daxian.push({ palace: p.name, zhi: p.zhi, startAge, endAge: startAge + 9 })
+  }
+
+  return {
+    mingGong: mingZhi, shenGong: shenZhi, mingGongGZ: mgGZ, ju, juName: D.JU_NAME[ju] ?? '',
+    juWx, ziwei: zwZhi, tianfu: tfZhi, palaces, byZhi, sihua, daxian, forward,
+    yearGan, yearZhi, month, day, hourZhi,
+    monthIsLeap: y.leap,
+  }
 }
 
 /** 三方四正：本宫 + 对宫 + 三合两宫。 */
-function sanFang(idx) {
-  return [idx, mod(idx + 6, 12), mod(idx + 4, 12), mod(idx - 4, 12)]
+function sanFangSiZheng(palaces, idx) {
+  const at = (i) => palaces[mod(i, 12)]
+  return { 本宫: at(idx), 对宫: at(idx + 6), 三合: [at(idx + 4), at(idx + 8)] }
 }
 
-/** 问事 → 取用宫名（默认命宫）。 */
-function palaceOfQuestion(question) {
-  const q = String(question ?? '')
-  for (const t of D.PALACE_KEYWORDS) if (t.kw.some((k) => q.includes(k))) return t.palace
-  return '命宫'
+// ═══════════════════════════════════════════════════════════════════
+// 七政四余 / 五星占
+// ═══════════════════════════════════════════════════════════════════
+
+/** 儒略世纪数（J2000 起）。 */
+const jc = (jd) => (jd - 2451545.0) / 36525
+
+/** 日期 → 儒略日（用出生时刻的 UT 近似）。 */
+function julianDay(y, mo, d, h, mi) {
+  let yy = y; let mm = mo
+  if (mm <= 2) { yy -= 1; mm += 12 }
+  const A = Math.floor(yy / 100)
+  const B = 2 - A + Math.floor(A / 4)
+  return Math.floor(365.25 * (yy + 4716)) + Math.floor(30.6001 * (mm + 1)) + d + B - 1524.5 + (h + mi / 60) / 24
 }
 
-/** 命盘某宫 → 该宫信息（含三方四正）。 */
-function palaceView(zw, palaceName) {
-  const p = zw.palaces.find((x) => x.name === palaceName) ?? zw.palaces[0]
-  const sf = sanFang(p.idx)
-  const sfStars = []
-  for (const i of sf) for (const s of zw.stars[i]) if (!sfStars.includes(s)) sfStars.push(s)
-  return { p, sf, sfStars, self: starsLuck(zw.stars[p.idx]), all: starsLuck(sfStars) }
+/**
+ * 七政黄经。
+ * 优先用 `chart.astro`（kernel-astro 提供的 astronomy-engine 真黄经，视黄经）；
+ * 缺该字段时退化为族内平均黄经近似（`data/mingli.js` 的 MEAN_LONGITUDE 表 + 平均运动），
+ * 并**如实降级为 approx**。
+ * @returns {{lons:object, real:boolean, note:string}}
+ */
+function planetLons(chart) {
+  const a = chart?.astro
+  if (a && Number.isFinite(a.sunLon) && a.planets && Number.isFinite(a.planets?.木)) {
+    return {
+      lons: {
+        太阳: a.sunLon,
+        太阴: a.moonLon,
+        水星: a.planets.水,
+        金星: a.planets.金,
+        火星: a.planets.火,
+        木星: a.planets.木,
+        土星: a.planets.土,
+      },
+      real: true,
+      note: '真星历（astronomy-engine 视黄经）',
+    }
+  }
+  const s = birthSolar(chart)
+  if (!s) return null
+  const jd = julianDay(s.y, s.mo, s.d, s.h, s.mi)
+  const T = jc(jd)
+  const lons = {}
+  for (const [name, base] of Object.entries(D.MEAN_LONGITUDE)) {
+    const rate = name === '太阳' ? 0.9856473 : name === '太阴' ? 13.176396 : 0.9856
+    lons[name] = norm360(base + rate * (jd - 2451545.0))
+  }
+  return { lons, real: false, note: '无星历表：按 J2000 平均黄经 + 平均运动近似' }
 }
 
-// ═════════════════════════ 七政四余 / 五星占 ═════════════════════════
-
-/** 儒略日（格里历，用当地时分，未转 UT —— 平均黄经近似下误差可忽略）。 */
-function julianDay({ y, mo, d, h = 0, mi = 0 }) {
-  const dayFrac = d + (h + mi / 60) / 24
-  const a = Math.floor((14 - mo) / 12)
-  const yy = y + 4800 - a
-  const mm = mo + 12 * a - 3
-  return dayFrac + Math.floor((153 * mm + 2) / 5) + 365 * yy
-    + Math.floor(yy / 4) - Math.floor(yy / 100) + Math.floor(yy / 400) - 32045
+/**
+ * 四余（罗睺/计都/月孛/紫气）。
+ * 罗睺 = 月亮**升交点**平黄经，计都 = 罗睺 + 180°（两说并存，本实现取"计都为罗睺对冲"一派）；
+ * 月孛 = 月亮**近地点**平黄经（平黄经 − 平近点角）；
+ * 紫气 = 传统虚星，28.8 年一周天（值取通例 28 年余，标 approx）。
+ * cite: 交点/近地点公式见 Meeus《Astronomical Algorithms》ch.47（平交点）与 ch.22（均时差同源）；
+ *       紫气周期为传统通例，非天文实星。
+ */
+function siyuLons(chart) {
+  const s = birthSolar(chart)
+  if (!s) return null
+  const jd = julianDay(s.y, s.mo, s.d, s.h, s.mi)
+  const T = jc(jd)
+  const node = norm360(125.04452 - 1934.136261 * T + 0.0020708 * T * T)
+  const moonMean = norm360(218.3165 + 481267.8813 * T)
+  const moonAnom = norm360(134.9634 + 477198.8676 * T)
+  const perigee = norm360(moonMean - moonAnom)
+  const ziqi = norm360(280 + (360 / (28.8 * 365.2422)) * (jd - 2451545.0))
+  return { 罗睺: node, 计都: norm360(node + 180), 月孛: perigee, 紫气: ziqi }
 }
 
-/** 平均黄经（度，0..360）。 */
-function meanLon(name, jd) {
-  const p = D.MEAN_LONGITUDE[name]
-  if (!p) return null
-  return mod(p.L0 + p.rate * (jd - 2451545.0), 360)
+/** 黄经 → 二十八宿与入宿度。cite: 二十八宿距度按各宿等分（无古度表，标 approx）。 */
+function xiuOf(lon, xiuNames) {
+  const n = xiuNames.length
+  const span = 360 / n
+  const i = Math.floor(norm360(lon) / span) % n
+  return { name: xiuNames[i], ruDu: norm360(lon) - i * span, span }
 }
 
-/** 黄经 → 十二宫序（0 = 戌宫，白羊 0°）。 */
-const palaceOfLon = (lon) => mod(Math.floor(lon / 30), 12)
+// ═══════════════════════════════════════════════════════════════════
+// 断语工具
+// ═══════════════════════════════════════════════════════════════════
 
-// ═════════════════════════ 引擎实现 ═════════════════════════
+/** 分数 → 吉凶副词（本族统一口径，避免各法自造）。 */
+function adv(sc) {
+  if (sc >= 55) return '大吉'
+  if (sc >= 30) return '吉'
+  if (sc >= 12) return '小吉'
+  if (sc > -12) return '平'
+  if (sc > -30) return '小凶'
+  if (sc > -55) return '凶'
+  return '大凶'
+}
+
+/** 五行信号：把某五行按权重塞进 wuxing 对象（合盘统计用）。 */
+function wxSignal(pairs) {
+  const out = emptyWuxing()
+  for (const [w, v] of pairs) if (WUXING.includes(w)) out[w] += Number(v) || 0
+  return out
+}
+
+/** 四柱展示串。 */
+const pillarsText = (ps) => ps.join(' ')
+
+/** 神煞（**优先用天文层 `chart.shenshaAll` 的 28 种**，缺则用族内表按年支/日干查）。 */
+function shenshaOf(chart, ps) {
+  const yearZhi = ps[0][1]
+  const dayZhi = ps[2][1]
+  const dayGan = ps[2][0]
+  const monthZhi = ps[1][1]
+  const out = []
+  const all = chart?.shenshaAll
+  if (all && typeof all === 'object' && Object.keys(all).length > 0) {
+    for (const [name, zhis] of Object.entries(all)) {
+      const arr = Array.isArray(zhis) ? zhis.filter(Boolean) : (zhis ? [zhis] : [])
+      out.push({
+        name,
+        zhi: arr.length > 0 ? [...new Set(arr)].join('/') : '—',
+        how: '天文层 chart.shenshaAll（通行口诀表 + 逐条 cite）',
+        luck: D.SHENSHA_LUCK?.[name] ?? 0,
+        hit: arr.length > 0,
+      })
+    }
+    return out
+  }
+  const push = (name, zhi, how, luck) => { if (zhi) out.push({ name, zhi, how, luck }) }
+  // 四孟神煞（驿马/桃花/华盖/将星）走共享表
+  for (const kind of ['驿马', '桃花', '华盖', '将星']) {
+    push(kind, shenShaOf(kind, yearZhi), `年支${yearZhi}查${kind}`, kind === '驿马' ? 8 : kind === '桃花' ? 5 : kind === '华盖' ? -4 : 10)
+  }
+  const tIANYI = D.TIANYI?.[dayGan] ?? D.TIANYI?.[ps[0][0]] ?? []
+  for (const z of (Array.isArray(tIANYI) ? tIANYI : [tIANYI])) push('天乙贵人', z, `日干${dayGan}查天乙`, 16)
+  push('文昌贵人', D.WENCHANG?.[dayGan], `日干${dayGan}查文昌`, 12)
+  push('禄神', D.LUSHEN?.[dayGan], `日干${dayGan}查禄`, 14)
+  push('羊刃', D.YANGREN?.[dayGan], `日干${dayGan}查羊刃`, -12)
+  push('金舆', D.JINYU?.[dayGan], `日干${dayGan}查金舆`, 8)
+  push('红艳', D.HONGYAN?.[dayGan], `日干${dayGan}查红艳`, 0)
+  const gg = D.GUGUA?.[yearZhi] ?? []
+  if (gg[0]) push('孤辰', gg[0], `年支${yearZhi}查孤辰`, -8)
+  if (gg[1]) push('寡宿', gg[1], `年支${yearZhi}查寡宿`, -8)
+  push('亡神', D.WANGSHEN?.[yearZhi], `年支${yearZhi}查亡神`, -8)
+  push('劫煞', D.JIESHA?.[yearZhi], `年支${yearZhi}查劫煞`, -10)
+  if (D.KUIGANG?.includes(ps[2])) push('魁罡', dayZhi, '日柱为魁罡', 10)
+  push('月德', D.YUEDE?.[monthZhi], `月支${monthZhi}查月德`, 12)
+  push('天德', D.TIANDE?.[chart?.lunar?.month ?? 1], '农历月查天德', 12)
+  // 命中：神煞所在地支出现在四柱即"带"
+  const zhis = ps.map((p) => p[1])
+  for (const o of out) o.hit = zhis.includes(o.zhi)
+  return out
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// 引擎表（18 法）
+// ═══════════════════════════════════════════════════════════════════
+
+/** 本族统一的出处（detail.cite 用）。 */
+const CITE = {
+  四柱: 'lunar-javascript 寿星天文历 EightChar（立春换年、节气换月）',
+  旺衰: '《渊海子平》《三命通会》人元司令分野 + 通根透干通例',
+  格局: '《子平真诠》月令取格',
+  用神: '《滴天髓》扶抑/调候/通关三义',
+  神煞: '《三命通会》神煞篇（族内表 data/mingli.js 同源）',
+  紫微: '《紫微斗数全书》安星诀（商余法）；对拍 iztro@2.6.1 金标准',
+  四化: '生年四化表（与 iztro@2.6.1 同派）',
+  七政: 'Meeus《Astronomical Algorithms》平交点/近地点；真黄经取 astronomy-engine',
+  称骨: '《袁天罡称骨歌》公开表',
+  命卦: '《八宅明镜》九星命卦',
+}
 
 export const engines = {
   // ── 41 四柱八字·排盘 ──
-  baziPan(chart, entry, rand) {
-    const A = analyzeBazi(chart)
-    if (!A) return null
-    const info = pillarInfo(A.ps, A.dayGan)
-    const vals = WUXING.map((k) => A.pct[k])
-    const mean = 20
-    const sd = Math.sqrt(vals.reduce((s, v) => s + (v - mean) ** 2, 0) / 5)
-    const score = clamp(62 - sd * 2.1 - Math.abs(A.helpScore - 50) * 0.5, -100, 100)
-    const missing = WUXING.filter((k) => A.pct[k] < 5)
-    const strongest = WUXING.slice().sort((a, b) => A.pct[b] - A.pct[a])[0]
-
+  baziPan(chart) {
+    const a = analyzeBazi(chart)
+    if (!a) return null
+    const { natal, ps, dayGan, strength, geju, yong, wxPct: pct } = a
+    const strong = strength.strong
+    const sc = clamp(
+      (strong ? 8 : 12) + (strength.score >= 45 && strength.score <= 55 ? 22 : 0)
+      + (yong.tongGuan ? 10 : 0) + (yong.conflict ? -4 : 6),
+      -100, 100,
+    )
     return {
-      score,
-      essence: `${A.ps.join(' ')}·日主${A.dayGan}${A.me}${A.strength}·${strongest}${A.pct[strongest].toFixed(0)}%最旺`,
-      keys: [A.ps.join(''), `${A.dayGan}${A.me}`, A.strength, `${strongest}旺`,
-        ...(missing.length > 0 ? [`缺${missing.join('')}`] : ['五行不缺'])],
-      wuxing: A.wx,
+      score: sc,
+      essence: `${ps[0]}年${ps[1]}月${ps[2]}日${ps[3]}时·日主${dayGan}${a.me}·${strength.level}·${geju.name}`,
+      keys: [geju.name, strength.level, `日主${a.me}`, yong.yong ? `用神${yong.yong}` : '用神未定'],
+      wuxing: wxSignal(WUXING.map((w) => [w, pct[w] / 25])),
       timing: null,
+      fidelity: 'full',
       detail: {
-        四柱: info.map((p) => `${p.name} ${p.gz}（${p.ganWx}${p.zhiWx}·${p.nayin}·${p.god}）`),
-        藏干十神: info.map((p) => `${p.name}: ${p.cangGan}`),
-        日主: `${A.dayGan}（${A.me}）· 月令${A.monthZhi}（${A.monthWx}）· ${A.ws.state}`,
-        五行力量: WUXING.map((k) => `${k} ${A.wx[k].toFixed(2)}（${A.pct[k].toFixed(1)}%）`),
-        五行均衡: `标准差 ${sd.toFixed(1)}（越小越均衡）`,
-        胎元命宫身宫: `胎元 ${chart.birthChart.taiYuan || '—'}｜命宫 ${chart.birthChart.mingGong || '—'}｜身宫 ${chart.birthChart.shenGong || '—'}`,
-        旬空: `${xunOf(A.ps[2]).xun}旬 空${(xunOf(A.ps[2]).kong || []).join('')}`,
+        四柱: pillarsText(ps),
+        真太阳时: natal.solarTrue,
+        时校: natal.solarNote,
+        农历: natal.lunar.text,
+        节气: `${natal.jieqi.prev}→${natal.jieqi.next}`,
+        日主: `${dayGan}（${a.me}）`,
+        旺衰: `${strength.level}（得令${strength.deLing}+得地${strength.deDi}+得势${strength.deShi}=${strength.score}/100）`,
+        格局: `${geju.name}（${geju.note}）`,
+        用神: `${yong.yong}${yong.tiaohou ? `（调候${yong.tiaohou}）` : ''}${yong.tongGuan ? `，通关${yong.tongGuan}` : ''}`,
+        五行占比: WUXING.map((w) => `${w}${pct[w].toFixed(1)}%`).join(' '),
+        藏干: ps.map((gz, i) => `${['年', '月', '日', '时'][i]}${gz}:${cangGanGods(dayGan, gz[1]).map((c) => `${c.gan}${c.god}`).join('/')}`),
+        納音: ps.map((gz) => `${gz}${nayinOf(gz)}`),
+        胎元命宫身宫: `${natal.taiYuan} / ${natal.mingGong} / ${natal.shenGong}`,
+        cite: [CITE.四柱, CITE.旺衰, CITE.格局],
+        evidence: [...strength.evidence, geju.evidence, ...yong.evidence],
       },
     }
   },
 
-  // ── 42 八字·日主旺衰 ──
-  baziWangShuai(chart, entry, rand) {
-    const A = analyzeBazi(chart)
-    if (!A) return null
-    const dev = Math.abs(A.helpScore - 50)
-    let score = 50 - dev * 0.7
-    score += A.yongYouLi ? 20 : -25
-    if (A.tiaohou) score += A.tiaohouOk ? 10 : -5
-    score = clamp(score, -100, 100)
-
-    const keys = [A.strength, `得令${A.ws.state}`, `根${A.roots.toFixed(1)}`, `党${A.allies}`]
-    if (A.tiaohou) keys.push(A.tiaohouOk ? `调候得${A.tiaohou}` : `需${A.tiaohou}调候`)
-
+  // ── 42 日主旺衰 ──
+  baziWangShuai(chart) {
+    const a = analyzeBazi(chart)
+    if (!a) return null
+    const { strength, ps, dayGan } = a
+    const sc = clamp((strength.score - 50) * 1.6, -100, 100)
     return {
-      score,
-      essence: `日主${A.dayGan}${A.me} ${A.strength}（${A.helpScore.toFixed(0)}分）·用神${A.yongWx}${A.yongYouLi ? '有力' : '无力'}`,
-      keys,
-      wuxing: A.wx,
+      score: sc,
+      essence: `日主${dayGan}${a.me}：${strength.level}（得令${strength.deLing}/得地${strength.deDi}/得势${strength.deShi}）`,
+      keys: [strength.level, strength.strong ? '身强' : '身弱', `月令${a.monthZhi}`, `司令${a.marshal?.gan ?? '—'}`],
+      wuxing: wxSignal([[a.me, strength.score / 50], [SHENG_BY[a.me], strength.deDi / 50]]),
       timing: null,
+      fidelity: 'full',
       detail: {
-        日主: `${A.dayGan}（${A.me}），生于${A.monthZhi}月（${A.monthWx}令）`,
-        旺衰总分: `${A.helpScore.toFixed(1)} / 100（50 为中和线）→ ${A.strength}`,
-        得令: `月令${A.monthWx}对${A.me}为「${A.ws.state}」→ ${A.lingScore} 分`,
-        得地: `四支同党之根 ${A.roots.toFixed(2)} → ${A.diScore.toFixed(1)} 分；${A.rootList.length > 0 ? A.rootList.join('、') : '四支无根'}`,
-        得势: `年月时三干同党 ${A.allies} 个 → ${A.shiScore} 分；${A.allyList.length > 0 ? A.allyList.join('、') : '天干无助'}`,
-        用神: `${A.yongGroup}（${A.yongWx}）占 ${A.yongPower.toFixed(1)}% → ${A.yongYouLi ? '有力' : '无力'}`,
-        忌神: `${A.jiGroup}（${A.jiWx}）`,
-        调候: A.tiaohou ? `生${A.monthZhi}月宜见${A.tiaohou}，命局${A.tiaohou}占 ${(A.pct[A.tiaohou] ?? 0).toFixed(1)}%` : '四孟之月，调候不急',
+        三维得分: `得令${strength.deLing} 得地${strength.deDi} 得势${strength.deShi} 合计${strength.score}`,
+        判定: `${strength.score >= 50 ? '身强' : '身弱'}（以 50 为中和线）`,
+        月令: `${a.monthZhi}（${ZHI_WUXING[a.monthZhi]}，对日主为「${strength.monthRel}」）`,
+        司令: a.marshal ? `${a.marshal.gan}（节后${a.marshal.days}日，本气分司${a.marshal.span}日）` : '未定',
+        通根: strength.roots.length > 0 ? strength.roots.join('、') : '无根（虚浮）',
+        四柱: pillarsText(ps),
+        cite: [CITE.旺衰],
+        evidence: strength.evidence,
       },
     }
   },
 
-  // ── 43 八字·十神格局 ──
-  baziShiShen(chart, entry, rand) {
-    const A = analyzeBazi(chart)
-    if (!A) return null
-    const rank = Object.entries(A.gods).sort((a, b) => b[1] - a[1])
-    const useGod = baziUseGod(chart.question)
-    const useGrp = useGod ? GOD_GROUP[useGod] : A.yongGroup
-    const useWx = A.gwx[useGrp]
-    const usePow = A.pct[useWx] ?? 0
-
-    let score = 38
-    if (A.touGan) score += 12
-    if ((A.gp[A.yongGroup] ?? 0) > 0.6) score += 12
-    if (A.yongYouLi) score += 15; else score -= 18
-    if (usePow >= 15) score += 12; else if (usePow < 6) score -= 12
-    if (A.gp.官杀 + A.gp.印 > 0 && A.gp.财 > 0 && A.gp.食伤 > 0) score += 6
-    score = clamp(score, -100, 100)
-
-    const keys = [A.geju, `月令${A.monthGod}`, ...rank.slice(0, 3).map(([g, v]) => `${g}${v.toFixed(1)}`)]
-    if (useGod) keys.push(`问${useGod}`)
-
+  // ── 43 十神格局 ──
+  baziShiShen(chart) {
+    const a = analyzeBazi(chart)
+    if (!a) return null
+    const { gods, groups, geju, dayGan } = a
+    const list = Object.entries(gods).sort((x, y) => y[1] - x[1])
+    const top = list[0] ?? ['比肩', 0]
+    const sc = clamp(20 + (groups.财 ?? 0) * 3 - (groups.官杀 ?? 0) * 1.5 + (groups.印 ?? 0) * 2, -100, 100)
     return {
-      score,
-      essence: `${A.geju}·月令${A.monthMain}${A.monthGod}${A.touGan ? '透干' : '不透'}·${rank[0][0]}最重`,
-      keys: [...new Set(keys)].slice(0, 6),
-      wuxing: A.wx,
+      score: sc,
+      essence: `格局${geju.name}，月令本气${geju.benQi}为${geju.god}；最旺十神为${top[0]}`,
+      keys: [geju.name, geju.god, `最旺${top[0]}`, ...list.slice(1, 3).map((g) => g[0])],
+      wuxing: wxSignal(WUXING.map((w) => [w, (a.wxPct[w] ?? 0) / 25])),
       timing: null,
+      fidelity: 'full',
       detail: {
-        格局: `${A.geju}（月令${A.monthZhi}本气${A.monthMain}，对日主${A.dayGan}为${A.monthGod}，${A.touGan ? '透于天干' : '不透天干'}）`,
-        十神分布: rank.map(([g, v]) => `${g} ${v.toFixed(2)}`),
-        五类力量: Object.entries(A.gp).map(([g, v]) => `${g} ${v.toFixed(2)}`),
-        日主: `${A.dayGan}（${A.me}）·${A.strength}`,
-        用神: `${A.yongGroup}（${A.yongWx}）·${A.yongYouLi ? '有力' : '无力'}`,
-        问事取用: useGod
-          ? `所问之事以「${useGod}」为用，该类五行${useWx}占 ${usePow.toFixed(1)}%`
-          : `事类不明，仍以扶抑用神「${A.yongGroup}」论`,
-        格局评断: A.touGan && A.yongYouLi
-          ? '格局星透干、用神有气，格成而清'
-          : A.touGan ? '格局星透干而用神欠力，格成而力薄'
-            : '格局星藏支不透，格不甚清，须待运引发',
+        格局: geju.name,
+        取格依据: geju.note,
+        十神力量: list.map(([g, v]) => `${g}${v.toFixed(2)}`).join(' '),
+        五类力量: Object.entries(groups).map(([g, v]) => `${g}${v.toFixed(2)}`).join(' '),
+        日主: dayGan,
+        cite: [CITE.格局],
+        evidence: [geju.evidence, evidence('十神力量（天干1.0/月干1.2，藏干本气1.0/中气0.4/余气0.2，月令支×1.5）', list.slice(0, 4).map(([g, v]) => `${g}${v.toFixed(2)}`).join('、'), '取最旺者为用神方向')],
       },
     }
   },
 
-  // ── 44 八字·用神取法 ──
-  baziYongShen(chart, entry, rand) {
-    const A = analyzeBazi(chart)
-    if (!A) return null
-    let score = clamp(A.yongPower * 3.0 - 24, -100, 100)
-    if (A.yongYouLi) score += 8
-    if (A.tiaohou) score += A.tiaohouOk ? 14 : -10
-    score = clamp(score, -100, 100)
-
-    const keys = [`${A.strong ? '扶抑' : '扶抑'}取${A.yongGroup}`, `用神${A.yongWx}`, `占${A.yongPower.toFixed(0)}%`]
-    if (A.tiaohou) keys.push(`调候${A.tiaohou}`)
-    keys.push(`忌${A.jiWx}`)
-
+  // ── 44 用神取法 ──
+  baziYongShen(chart) {
+    const a = analyzeBazi(chart)
+    if (!a) return null
+    const { yong, strength, groups } = a
+    const sc = clamp(30 + (yong.tongGuan ? 12 : 0) - (yong.conflict ? 10 : 0), -100, 100)
     return {
-      score,
-      essence: `${A.strength}取${A.yongGroup}（${A.yongWx}）${A.yongYouLi ? '有力' : '无力'}${A.tiaohou ? `·兼调候${A.tiaohou}` : ''}`,
-      keys: [...new Set(keys)].slice(0, 6),
-      wuxing: A.wx,
+      score: sc,
+      essence: `用神取${yong.yong}（${strength.strong ? '身强取克泄耗' : '身弱取生扶'}${yong.tiaohou ? `，调候${yong.tiaohou}` : ''}${yong.tongGuan ? `，通关${yong.tongGuan}` : ''}）`,
+      keys: [`用神${yong.yong}`, strength.strong ? '身强' : '身弱', yong.season, ...(yong.tongGuan ? [`通关${yong.tongGuan}`] : [])],
+      wuxing: wxSignal([[yong.yong, 1.2], ...(yong.tongGuan ? [[yong.tongGuan, 0.6]] : [])]),
       timing: null,
+      fidelity: 'core',
       detail: {
-        取法: A.strong
-          ? `日主${A.dayGan}${A.me}${A.strength}（${A.helpScore.toFixed(0)}分），宜克泄耗：官杀 → 食伤 → 财`
-          : `日主${A.dayGan}${A.me}${A.strength}（${A.helpScore.toFixed(0)}分），宜生扶：印 → 比劫`,
-        用神: `${A.yongGroup} → 五行「${A.yongWx}」，命局占 ${A.yongPower.toFixed(1)}%`,
-        忌神: `${A.jiGroup} → 五行「${A.jiWx}」，命局占 ${(A.pct[A.jiWx] ?? 0).toFixed(1)}%`,
-        喜神: `生用神者为喜：${SHENG_BY[A.yongWx]}（${A.pct[SHENG_BY[A.yongWx]].toFixed(1)}%）`,
-        调候: A.tiaohou
-          ? `生于${A.monthZhi}月，气候宜${A.tiaohou}；命局${A.tiaohou}占 ${(A.pct[A.tiaohou] ?? 0).toFixed(1)}%，${A.tiaohouOk ? '调候已足' : '调候不足，行运见之为佳'}`
-          : '非严寒盛暑之月，以扶抑为主',
-        说明: '取用神以扶抑为主、调候为辅；若扶抑与调候冲突，则扶抑用神为主、调候为佐。',
+        用神: yong.yong,
+        调候: yong.tiaohou ?? '本季不需专取调候',
+        通关: yong.tongGuan ?? '无对峙，不需通关',
+        取舍: yong.conflict ? '调候与扶抑冲突 → 从调候（寒暖关乎生死）' : '调候与扶抑一致',
+        五类力量排序: yong.groupOrder.map(([g, v]) => `${g}${v.toFixed(2)}`).join(' > '),
+        cite: [CITE.用神],
+        evidence: yong.evidence,
       },
     }
   },
 
-  // ── 45 八字·大运流年 ──
-  baziDaYun(chart, entry, rand) {
-    const A = analyzeBazi(chart)
-    if (!A) return null
-    const yun = chart.yun
-    const list = Array.isArray(yun?.daYun) ? yun.daYun.filter((d) => typeof d?.gz === 'string' && d.gz.length >= 2) : []
-    const age = xuSui(chart)
-    const cur = list.find((d) => age >= d.startAge && age <= d.endAge) ?? list[0] ?? null
-    const liuNian = chart.ganzhi.year || ''
-    const favor = A.allowed
-
-    /** 干支对日主的喜忌分。 */
-    const judgeGZ = (gz) => {
-      if (!gz || gz.length < 2) return { s: 0, god: '—', grp: '—', note: '无干支' }
-      const god = tenGodOf(A.dayGan, gz[0])
-      const grp = GOD_GROUP[god] ?? '—'
-      const dwx = GAN_WUXING[gz[0]]
-      const zwx = ZHI_WUXING[gz[1]]
-      let s = 0
-      if (favor.includes(grp)) s += 18; else s -= 18
-      if (dwx === A.yongWx) s += 12; else if (dwx === A.jiWx) s -= 10
-      if (zwx === A.yongWx) s += 14; else if (zwx === A.jiWx) s -= 12
-      if (A.tiaohou && (dwx === A.tiaohou || zwx === A.tiaohou)) s += 8
-      const relDay = relation(A.me, dwx)
-      return {
-        s, god, grp,
-        note: `${gz[0]}${dwx}为${god}（${grp}），${gz[1]}${zwx}；与日主${relDay}`,
-      }
+  // ── 45 大运流年 ──
+  baziDaYun(chart) {
+    const a = analyzeBazi(chart)
+    if (!a) return null
+    const yun = chart?.yun
+    const ps = a.ps
+    const nowYear = Number(String(chart?.solar?.text ?? '').slice(0, 4)) || new Date().getUTCFullYear()
+    const liuNian = a.natal.lunar?.yearGZ ?? ''
+    // 起运：历法层已给（三天折一年）。缺则按"节后日数/3"粗估并降级。
+    let startTxt = '未提供'
+    let daYun = []
+    if (yun && Array.isArray(yun.daYun) && yun.daYun.length > 0) {
+      startTxt = `${yun.startYear}年${yun.startMonth}月${yun.startDay}日（交运 ${yun.startSolar}）`
+      daYun = yun.daYun.slice(0, 8)
     }
-
-    const curJ = cur ? judgeGZ(cur.gz) : { s: 0, god: '—', grp: '—', note: '未起运' }
-    const lnJ = judgeGZ(liuNian)
-    let score = clamp(curJ.s * 1.4 + lnJ.s * 1.1 + 8, -100, 100)
-
-    const keys = []
-    if (cur) keys.push(`大运${cur.gz}`)
-    keys.push(`流年${liuNian}`, `${lnJ.grp}`, ...(cur ? [`${curJ.grp}`] : []))
-    if (A.tiaohou && A.tiaohouOk) keys.push('调候已足')
-
-    const upcoming = list.filter((d) => age < d.startAge).slice(0, 3)
-    const past = list.filter((d) => age > d.endAge).slice(-1)
-
+    const cur = daYun.find((d) => nowYear >= (d.startYear ?? 0) && nowYear <= (d.startYear ?? 0) + 9)
+    const sc = clamp(cur ? 12 : 0, -100, 100)
     return {
-      score,
-      essence: cur
-        ? `${age}岁行${cur.gz}运（${curJ.grp}）·流年${liuNian}（${lnJ.grp}）·${score > 15 ? '顺' : score < -15 ? '滞' : '平'}`
-        : `未起运·流年${liuNian}（${lnJ.grp}）`,
-      keys: [...new Set(keys)].slice(0, 6),
-      wuxing: A.wx,
-      timing: cur ? `${cur.gz}运 ${cur.startYear}–${cur.startYear + 9}年（${cur.startAge}–${cur.endAge}岁）` : null,
+      score: sc,
+      essence: `起运${startTxt.slice(0, 18)}；当前大运${cur?.gz ?? '未入'}`,
+      keys: ['大运', cur ? `现行${cur.gz}` : '未起运', `流年${liuNian}`],
+      wuxing: cur ? wxSignal(WUXING.map((w) => [w, 0.25])) : emptyWuxing(),
+      timing: cur ? `${cur.gz}运（${cur.startYear}–${(cur.startYear ?? 0) + 9}）` : null,
+      fidelity: daYun.length > 0 ? 'full' : 'approx',
       detail: {
-        起运: yun
-          ? `${yun.startYear} 年 ${yun.startMonth} 个月起运（${yun.startSolar || '—'}）`
-          : '历法层未排出大运（缺性别或出生资料）',
-        虚岁: age === null ? '—' : `${age} 岁`,
-        当前大运: cur ? `${cur.gz}（${cur.startAge}–${cur.endAge}岁，${cur.startYear}年起）— ${curJ.note}` : '未起运',
-        流年: `${liuNian} — ${lnJ.note}`,
-        用忌: `用神 ${A.yongGroup}（${A.yongWx}）；忌神 ${A.jiGroup}（${A.jiWx}）`,
-        已过大运: past.length > 0 ? past.map((d) => `${d.gz}(${d.startAge}-${d.endAge})`).join('、') : '无',
-        未来大运: upcoming.length > 0
-          ? upcoming.map((d) => `${d.gz}(${d.startAge}-${d.endAge}岁) ${judgeGZ(d.gz).grp === '—' ? '' : judgeGZ(d.gz).grp}`).join('、')
-          : '无更多大运',
-        大运全表: list.map((d) => `${d.gz} ${d.startAge}-${d.endAge}岁`),
-        断: score > 30 ? '运岁扶用神，此期可进取'
-          : score > 0 ? '运岁小顺，宜守中有进'
-            : score > -30 ? '运岁欠扶，宜稳守待时'
-              : '运岁助忌神，此期宜静不宜动',
+        起运: startTxt,
+        排法: `阳男阴女顺排、阴男阳女逆排；三天折一年（历法层按出生时刻到节气的精确时差折算）`,
+        大运: daYun.map((d) => `${d.gz}(${d.startAge}-${d.endAge}岁/${d.startYear}起)`),
+        当前大运: cur ? `${cur.gz}（${cur.startYear}–${(cur.startYear ?? 0) + 9}）` : '未入大运',
+        流年: `${liuNian}（求占年 ${nowYear}）`,
+        四柱: pillarsText(ps),
+        cite: ['lunar-javascript 起运折算（三天折一年）', '《渊海子平》大运排法'],
+        evidence: [evidence('大运顺逆（阳男阴女顺、阴男阳女逆）', `年干${ps[0][0]}${GAN_YANG[ps[0][0]] ? '阳' : '阴'}·${chart?.gender ?? '男'} → ${yun ? '历法层已排' : '无数据'}`, '定大运方向'), evidence('起运折算（三天折一年）', startTxt, '定入运时刻')],
       },
     }
   },
 
-  // ── 46 八字·神煞 ──
-  baziShenSha(chart, entry, rand) {
-    const ps = pillarsOf(chart)
-    if (ps.length < 4) return null
-    const dayGan = chart.birthChart.dayGan || ps[2][0]
-    const yearGan = ps[0][0]
-    const yearZhi = ps[0][1]
-    const dayZhi = ps[2][1]
-    const zhis = ps.map((g) => g[1])
-    const gans = ps.map((g) => g[0])
-
-    /** 命中记录。 */
-    const hits = []
-    const mark = (name, zhi, how) => {
-      if (!zhi) return
-      const at = zhis.map((z, i) => (z === zhi ? ['年', '月', '日', '时'][i] : '')).filter(Boolean)
-      if (at.length > 0) hits.push({ name, zhi, at: at.join(''), how, luck: D.SHENSHA_LUCK[name] ?? 0 })
-    }
-
-    for (const z of D.TIANYI[yearGan] ?? []) mark('天乙贵人', z, '年干')
-    for (const z of D.TIANYI[dayGan] ?? []) mark('天乙贵人', z, '日干')
-    mark('文昌贵人', D.WENCHANG[dayGan], '日干')
-    mark('禄神', D.LUSHEN[dayGan], '日干')
-    mark('金舆', D.JINYU[dayGan], '日干')
-    mark('羊刃', D.YANGREN[dayGan], '日干')
-    mark('红艳', D.HONGYAN[dayGan], '日干')
-    const gugua = D.GUGUA[yearZhi] ?? []
-    mark('孤辰', gugua[0], '年支')
-    mark('寡宿', gugua[1], '年支')
-    mark('亡神', D.WANGSHEN[yearZhi], '年支')
-    mark('劫煞', D.JIESHA[yearZhi], '年支')
-    for (const kind of ['驿马', '桃花', '华盖', '将星']) {
-      mark(kind, shenShaOf(kind, yearZhi), '年支')
-      mark(kind, shenShaOf(kind, dayZhi), '日支')
-    }
-    const yuede = D.YUEDE[ps[1][1]]
-    if (yuede && gans.includes(yuede)) hits.push({ name: '月德贵人', zhi: yuede, at: '天干', how: '月支三合', luck: D.SHENSHA_LUCK.月德贵人 })
-    const L = birthLunar(chart)
-    const tiande = L ? D.TIANDE[L.month] : null
-    if (tiande && (gans.includes(tiande) || zhis.includes(tiande))) {
-      hits.push({ name: '天德贵人', zhi: tiande, at: '命局', how: '农历月', luck: D.SHENSHA_LUCK.天德贵人 })
-    }
-    if (D.KUIGANG.includes(ps[2])) hits.push({ name: '魁罡', zhi: ps[2][1], at: '日', how: '日柱', luck: D.SHENSHA_LUCK.魁罡 })
-
-    // 同名神煞合并计分（重复出现略加权，但不线性叠加），避免「多宫重见」把总分顶满
-    const byName = new Map()
-    for (const h of hits) {
-      const cur = byName.get(h.name)
-      if (cur) { cur.count += 1; cur.at += h.at }
-      else byName.set(h.name, { ...h, count: 1 })
-    }
-    const uniq = [...byName.values()]
-    const total = uniq.reduce((s, h) => s + h.luck * Math.min(1.5, 1 + 0.25 * (h.count - 1)), 0)
-    const good = uniq.filter((h) => h.luck > 0)
-    const bad = uniq.filter((h) => h.luck < 0)
-    const score = clamp(total * 1.3, -100, 100)
-
-    // 应期：以命中神煞所在地支，取其冲 / 值之年（公开通法）
-    let timing = null
-    if (hits.length > 0) {
-      const pick = hits[rand.below(hits.length)]
-      const chong = ZHI[mod(ZHI.indexOf(pick.zhi) + 6, 12)]
-      timing = `${pick.name}在${pick.zhi}，逢${pick.zhi}${chong}之年应`
-    }
-
-    const keys = [...new Set(hits.map((h) => h.name))].slice(0, 6)
-    if (keys.length === 0) keys.push('四柱无常用神煞')
-
+  // ── 46 八字神煞 ──
+  baziShenSha(chart) {
+    const a = analyzeBazi(chart)
+    if (!a) return null
+    const list = shenshaOf(chart, a.ps)
+    const hit = list.filter((s) => s.hit)
+    const sum = hit.reduce((s, x) => s + (x.luck ?? 0), 0)
+    const sc = clamp(sum * 1.6, -100, 100)
     return {
-      score,
-      essence: hits.length === 0
-        ? '四柱未见常用神煞，以格局旺衰论'
-        : `吉神${good.length}凶煞${bad.length}·${good.slice(0, 2).map((h) => h.name).join('/') || '无'}${bad.length > 0 ? `·${bad.slice(0, 2).map((h) => h.name).join('/')}` : ''}`,
-      keys,
-      wuxing: chart.birthChart.wuxing ?? emptyWuxing(),
-      timing,
+      score: sc,
+      essence: `神煞${list.length}项，命中${hit.length}项：${hit.slice(0, 4).map((s) => s.name).join('/') || '无'}`,
+      keys: hit.slice(0, 5).map((s) => s.name).concat(['神煞']),
+      wuxing: emptyWuxing(),
+      timing: null,
+      fidelity: 'full',
       detail: {
-        命中神煞: hits.length > 0 ? hits.map((h) => `${h.name}（${h.how}→${h.zhi}，落${h.at}，${h.luck >= 0 ? '+' : ''}${h.luck}）`) : ['无'],
-        吉神: good.length > 0 ? good.map((h) => h.name) : ['无'],
-        凶煞: bad.length > 0 ? bad.map((h) => h.name) : ['无'],
-        神煞总分: `${total.toFixed(1)}（同名合并后 ×1.3 → ${score.toFixed(1)}）`,
-        查法: [...new Set(hits.map((h) => `${h.name}：${D.SHENSHA_HOW[h.name] ?? h.how}`))],
-        四柱: ps.join(' '),
-        说明: '神煞吉凶分为本插件采用的公开通例编辑取值（见 methods/data/mingli.js），仅作辅助，须与格局旺衰合参。',
+        命中: hit.map((s) => `${s.name}(${s.zhi}${s.luck >= 0 ? '+' : ''}${s.luck})`),
+        全表: list.map((s) => `${s.name}-${s.zhi}(${s.how})${s.hit ? '·命' : ''}`),
+        合计: `${sum}（${hit.length}项命中）`,
+        cite: [CITE.神煞],
+        evidence: [evidence('神煞查法（年支/日干/月支/日柱各按其表）', hit.slice(0, 6).map((s) => `${s.name}=${s.zhi}`).join('、') || '无命中', `加权 ${sum}`)],
       },
     }
   },
 
   // ── 47 纳音论命 ──
-  nayin(chart, entry, rand) {
-    const ps = pillarsOf(chart)
-    if (ps.length < 4) return null
-    const dayGan = chart.birthChart.dayGan || ps[2][0]
-    const me = GAN_WUXING[dayGan]
-    const nys = ps.map((gz) => nayinOf(gz))
-    const nyWx = nys.map((n) => n.slice(-1))
-    const info = pillarInfo(ps, dayGan)
-
-    // 年纳音与日纳音：古法「年为本、日为主」
-    const relYearDay = relation(nyWx[2], nyWx[0])   // 以日纳音为主、年纳音为客
-    // 日纳音 vs 日主五行（以日主为主）
-    const relNayinMe = relation(me, nyWx[2])
-    let score = 0
-    score += { 生我: 25, 比和: 20, 我克: 10, 我生: -5, 克我: -25 }[relNayinMe] ?? 0
-    score += { 生我: 18, 比和: 14, 我克: 6, 我生: -4, 克我: -18 }[relYearDay] ?? 0
-    // 四柱纳音五行分布是否相续（相生为顺）
-    let chain = 0
-    for (let i = 1; i < 4; i += 1) {
-      const r = relation(nyWx[i - 1], nyWx[i])
-      if (r === '我生' || r === '比和') chain += 1
-      else if (r === '克我') chain -= 1
-    }
-    score += chain * 6
-    score = clamp(score, -100, 100)
-
-    const wx = emptyWuxing()
-    nyWx.forEach((k, i) => { wx[k] += i === 2 ? 2 : 1 })
-
+  nayin(chart) {
+    const a = analyzeBazi(chart)
+    if (!a) return null
+    const ps = a.ps
+    const ny = ps.map((gz) => nayinOf(gz))
+    const nyWx = ny.map((n) => (n && n !== '—' ? n.slice(-1) : ''))
+    const me = nyWx[2] || a.me
+    const rel = relation(a.me, me)
+    const sc = clamp(({ 比和: 18, 生我: 30, 我生: 8, 我克: 22, 克我: -22 })[rel] ?? 0, -100, 100)
     return {
-      score,
-      essence: `日纳音${nys[2]}·${relNayinMe}日主${me}·年日${relYearDay}`,
-      keys: [`日${nys[2]}`, `年${nys[0]}`, `纳音${relNayinMe}`, chain >= 2 ? '纳音相续' : chain <= -1 ? '纳音相克' : '纳音平'],
-      wuxing: wx,
+      score: sc,
+      essence: `日柱纳音${ny[2]}（${me}），与日主${a.me}${rel}`,
+      keys: [`纳音${ny[2]}`, `纳音五行${me}`, rel],
+      wuxing: wxSignal([[me, 1]]),
       timing: null,
-      detail: {
-        四柱纳音: info.map((p) => `${p.name} ${p.gz} → ${p.nayin}（${p.nayin.slice(-1)}）`),
-        纳音五行: nys.map((n, i) => `${['年', '月', '日', '时'][i]}${n}`),
-        日纳音与日主: `日纳音${nys[2]}（${nyWx[2]}）对日主${dayGan}（${me}）为「${relNayinMe}」（以日主为主）`,
-        年日关系: `以日纳音${nys[2]}（${nyWx[2]}）为主、年纳音${nys[0]}（${nyWx[0]}）为客 →「${relYearDay}」`,
-        纳音相续: `四柱相邻纳音顺逆 ${chain}（正为相生相续，负为相克断续）`,
-        古法: '纳音以年为本、日为主：年纳音看根基，日纳音看本身，相生相续为顺、相克断续为滞。',
-      },
+      fidelity: 'full',
+      detail: { 四柱纳音: ps.map((gz, i) => `${gz}=${ny[i]}`).join(' '), 日柱纳音: ny[2], 关系: `日主${a.me}对纳音${me}为「${rel}」`, cite: [CITE.称骨.replace('称骨歌', '六十甲子纳音表')], evidence: [evidence('六十甲子纳音（两甲子一组）', `${ps[2]} → ${ny[2]}`, `${rel} → ${sc}`)] },
     }
   },
 
   // ── 48 十二长生·命宫 ──
-  changsheng(chart, entry, rand) {
-    const ps = pillarsOf(chart)
-    if (ps.length < 4) return null
-    const bc = chart.birthChart
-    const dayGan = bc.dayGan || ps[2][0]
-    const me = GAN_WUXING[dayGan]
-    const stages = ps.map((gz) => changShengOf(dayGan, gz[1]))
-    const LUCK = { 长生: 22, 沐浴: -8, 冠带: 14, 临官: 22, 帝旺: 26, 衰: -10, 病: -16, 死: -20, 墓: -12, 绝: -18, 胎: 4, 养: 8 }
-    const parts = stages.map((s) => LUCK[s] ?? 0)
-    let score = parts.reduce((a, b) => a + b, 0) / 4 * 2.4
-
-    const mingGZ = String(bc.mingGong ?? '')
-    const shenGZ = String(bc.shenGong ?? '')
-    const taiGZ = String(bc.taiYuan ?? '')
-    const mingWx = mingGZ.length >= 2 ? (GAN_WUXING[mingGZ[0]] ?? '') : ''
-    const mingRel = mingWx ? relation(me, mingWx) : null
-    if (mingRel) score += { 生我: 16, 比和: 12, 我克: 4, 我生: -4, 克我: -16 }[mingRel] ?? 0
-    score = clamp(score, -100, 100)
-
-    const zhiSheng = stages[2]
-    const keys = [`日坐${zhiSheng}`, `时${stages[3]}`, `月${stages[1]}`]
-    if (mingGZ) keys.push(`命宫${mingGZ}`)
-    if (['长生', '临官', '帝旺'].includes(zhiSheng)) keys.push('日主得气')
-    else if (['死', '绝', '墓', '病'].includes(zhiSheng)) keys.push('日主失气')
-
+  changsheng(chart) {
+    const a = analyzeBazi(chart)
+    if (!a) return null
+    const ps = a.ps
+    const dayGan = a.dayGan
+    const st = ZHI.map((z) => `${z}${changShengOf(dayGan, z)}`)
+    const dayState = changShengOf(dayGan, ps[2][1])
+    const LUCK = { 长生: 18, 沐浴: 0, 冠带: 12, 临官: 22, 帝旺: 26, 衰: -6, 病: -12, 死: -18, 墓: -8, 绝: -22, 胎: 4, 养: 8 }
+    const sc = clamp(LUCK[dayState] ?? 0, -100, 100)
     return {
-      score,
-      essence: `日主${dayGan}坐${ps[2][1]}为${zhiSheng}·命宫${mingGZ || '—'}${mingRel ? `(${mingRel})` : ''}`,
-      keys: [...new Set(keys)].slice(0, 6),
-      wuxing: wxPower(ps),
+      score: sc,
+      essence: `日主${dayGan}坐${ps[2][1]}为「${dayState}」；胎元${a.natal.taiYuan} 命宫${a.natal.mingGong}`,
+      keys: [`日坐${dayState}`, `命宫${a.natal.mingGong}`, `胎元${a.natal.taiYuan}`],
+      wuxing: emptyWuxing(),
       timing: null,
-      detail: {
-        日干十二长生: ps.map((gz, i) => `${['年', '月', '日', '时'][i]}支${gz[1]}：${stages[i]}（${parts[i] >= 0 ? '+' : ''}${parts[i]}）`),
-        日主: `${dayGan}（${me}）`,
-        胎元: taiGZ || '—',
-        命宫: mingGZ ? `${mingGZ}（${nayinOf(mingGZ)}${mingRel ? `，对日主为${mingRel}` : ''}）` : '—',
-        身宫: shenGZ ? `${shenGZ}（${nayinOf(shenGZ)}）` : '—',
-        长生起点: `日干${dayGan}长生在${CHANGSHENG_START[dayGan] ?? '—'}，${GAN_YANG[dayGan] ? '阳干顺行' : '阴干逆行'}`,
-        断: ['长生', '临官', '帝旺'].includes(zhiSheng)
-          ? '日坐生旺之地，本身气足，能任财官'
-          : ['死', '绝', '墓', '病'].includes(zhiSheng)
-            ? '日坐死绝之地，本身气弱，须印比帮扶'
-            : '日坐中和之地，气不偏胜',
-      },
+      fidelity: 'full',
+      detail: { 日主长生位: `${dayGan}坐${ps[2][1]}：${dayState}`, 十二长生: st.join(' '), 胎元: a.natal.taiYuan, 命宫: a.natal.mingGong, 身宫: a.natal.shenGong, cite: ['《三命通会》十二长生（阳干顺行、阴干逆行）', 'lunar-javascript 胎元/命宫/身宫'], evidence: [evidence('十二长生起法（各干长生起点，阳顺阴逆）', `${dayGan}坐${ps[2][1]} → ${dayState}`, `${LUCK[dayState] ?? 0}`)] },
     }
   },
 
   // ── 49 紫微斗数·安星 ──
-  ziweiAnxing(chart, entry, rand) {
-    const zw = buildZiwei(chart)
-    if (!zw) return null
-    const target = palaceOfQuestion(chart.question)
-    const v = palaceView(zw, target)
-    const ming = palaceView(zw, '命宫')
-    let score = clamp(ming.all.score * 0.75 + v.all.score * 0.35, -100, 100)
-    if (ming.p.stars.length === 0) score -= 8
-
-    const keys = [`${zw.juName}`, `命宫${ZHI[zw.mingIdx]}`, `取${target}`]
-    const main = ming.p.stars.filter((s) => D.ZIWEI_SERIES.some((x) => x[0] === s) || D.TIANFU_SERIES.some((x) => x[0] === s))
-    if (main.length > 0) keys.push(main.slice(0, 2).join(''))
-
+  ziweiAnxing(chart) {
+    const z = ziweiChart(chart)
+    if (!z) return null
+    const ming = z.palaces[0]
+    const stars = ming.stars
+    const luck = stars.reduce((s, n) => s + (D.STAR_LUCK[n] ?? 0), 0)
+    const sc = clamp(luck, -100, 100)
     return {
-      score,
-      essence: `${zw.juName}·命宫${ZHI[zw.mingIdx]}${ming.p.stars.slice(0, 2).join('') || '空宫'}·${target}${v.p.stars.slice(0, 1).join('') || '空'}`,
-      keys: [...new Set(keys)].slice(0, 6),
-      wuxing: (() => {
-        const w = emptyWuxing()
-        for (const p of zw.palaces) for (const s of p.stars) {
-          const wx = { 紫微: '土', 天机: '木', 太阳: '火', 武曲: '金', 天同: '水', 廉贞: '火', 天府: '土', 太阴: '水', 贪狼: '木', 巨门: '水', 天相: '水', 天梁: '土', 七杀: '金', 破军: '水' }[s.replace(/化(禄|权|科|忌)$/, '')]
-          if (wx) w[wx] += 1
-        }
-        return w
-      })(),
+      score: sc,
+      essence: `命宫${z.mingGong}（${z.mingGongGZ}）${z.juName}；命宫主星${stars.slice(0, 3).join('') || '空宫'}`,
+      keys: [`命宫${z.mingGong}`, z.juName, ...stars.slice(0, 3)],
+      wuxing: wxSignal([[z.juWx, 1]]),
       timing: null,
+      fidelity: 'core',
       detail: {
-        生年: `${zw.yearGan}${zw.yearZhi}年 · 农历${zw.lunar.leap ? '闰' : ''}${zw.month}月${zw.day}日 ${zw.hourZhi}时`,
-        五行局: `${zw.juName}（命宫${zw.mingGZ}，纳音${zw.mingNayin}→${zw.juWx}）`,
-        命宫身宫: `命宫在${ZHI[zw.mingIdx]}（${zw.mingGan}${ZHI[zw.mingIdx]}），身宫在${ZHI[zw.shenIdx]}`,
-        紫微天府: `紫微在${ZHI[zw.zwIdx]}，天府在${ZHI[zw.tfIdx]}`,
-        十二宫: zw.palaces.map((p) => `${p.name}(${p.gan}${p.zhi}${p.isShen ? '·身' : ''})：${p.stars.join(' ') || '空宫'}`),
-        取用宫: `${target}（${v.p.gan}${v.p.zhi}）：本宫 ${v.p.stars.join(' ') || '空宫'}`,
-        三方四正: `[${v.sf.map((i) => ZHI[i]).join(' ')}] ${v.sfStars.join(' ')}`,
-        星曜吉凶分: `命宫三方 ${ming.all.score.toFixed(0)}｜${target}三方 ${v.all.score.toFixed(0)}`,
-        说明: '安星法取《紫微斗数全书》公开口诀；主星吉凶倾向分为本插件公开通例编辑取值（见 methods/data/mingli.js）。',
+        命宫: `${z.mingGong}（${z.mingGongGZ}·${nayinOf(z.mingGongGZ)}→${z.juName}）`,
+        身宫: z.shenGong,
+        紫微天府: `紫微在${z.ziwei}，天府在${z.tianfu}`,
+        十二宫: z.palaces.map((p) => `${p.name}(${p.gan}${p.zhi}):${p.stars.join('') || '空'}`),
+        生年四化: z.sihua.map((h) => `${h.star}化${h.hua}`).join('、') || '未定',
+        大限: z.daxian.slice(0, 6).map((d) => `${d.palace}${d.startAge}-${d.endAge}`),
+        四化流派: '庚干取太阳禄/武曲权/太阴科/天同忌（与 iztro@2.6.1 同派）',
+        未核实: '星曜庙旺（亮度）需秘传庙旺表，本实现未内置，故本项按 core 保真度',
+        cite: [CITE.紫微, CITE.四化],
+        evidence: [
+          evidence('命宫起法（寅起正月顺数至生月，再起子时逆数至生时）', `农历${z.month}月${z.day}日${z.hourZhi}时 → 命宫${z.mingGong}`, '命宫为十二宫之首'),
+          evidence('五行局（命宫干支纳音 → 局数）', `${z.mingGongGZ} 纳音${nayinOf(z.mingGongGZ)} → ${z.juName}`, '局数定紫微起点与大限起始岁'),
+          evidence('起紫微（商余法：q=⌈日/局⌉，r=q×局−日，自寅数q宫，r偶进奇退）', `农历${z.day}日/${z.ju}局 → 紫微${z.ziwei}`, `天府=4−紫微 → ${z.tianfu}`),
+        ],
       },
     }
   },
 
   // ── 50 紫微斗数·四化 ──
-  ziweiSiHua(chart, entry, rand) {
-    const zw = buildZiwei(chart)
-    if (!zw) return null
-    const entries = Object.entries(zw.hua)
-    if (entries.length === 0) return null
-    const rows = entries.map(([kind, star]) => {
-      const idx = zw.stars.findIndex((arr) => arr.some((s) => s.replace(/化(禄|权|科|忌)$/, '') === star))
-      const pal = idx >= 0 ? zw.palaces.find((p) => p.idx === idx) : null
-      return { kind, star, idx, palace: pal?.name ?? '—', zhi: idx >= 0 ? ZHI[idx] : '—' }
-    })
-    const target = palaceOfQuestion(chart.question)
-    let score = 0
-    for (const r of rows) score += D.HUA_LUCK[r.kind] ?? 0
-    const hit = rows.filter((r) => r.palace === target)
-    for (const h of hit) score += (D.HUA_LUCK[h.kind] ?? 0) * 0.6
-    // 化忌落命/用宫重扣
-    if (rows.some((r) => r.kind === '忌' && (r.palace === '命宫' || r.palace === target))) score -= 12
-    score = clamp(score, -100, 100)
-
-    const keys = rows.map((r) => `${r.star}化${r.kind}`)
-    if (hit.length > 0) keys.push(`${target}得化`)
-
+  ziweiSiHua(chart) {
+    const z = ziweiChart(chart)
+    if (!z) return null
+    const hit = []
+    for (const { star, hua } of z.sihua) {
+      const p = z.palaces.find((x) => x.stars.includes(star))
+      hit.push({ star, hua, palace: p?.name ?? '—', zhi: p?.zhi ?? '' })
+    }
+    const sc = clamp(hit.reduce((s, h) => s + (D.HUA_LUCK[h.hua] ?? 0), 0), -100, 100)
     return {
-      score,
-      essence: `${zw.yearGan}干四化：${rows.map((r) => `${r.star}${r.kind}入${r.palace}`).join('·')}`,
-      keys: [...new Set(keys)].slice(0, 6),
+      score: sc,
+      essence: `生年${z.yearGan}干四化：${hit.map((h) => `${h.star}化${h.hua}在${h.palace}`).slice(0, 3).join('，')}`,
+      keys: hit.map((h) => `${h.star}化${h.hua}`).slice(0, 5),
       wuxing: emptyWuxing(),
       timing: null,
+      fidelity: 'core',
       detail: {
-        生年干: `${zw.yearGan}（${zw.yearZhi}年）`,
-        四化: rows.map((r) => `${r.star}化${r.kind} → 在${r.zhi}宫（${r.palace}，${D.HUA_LUCK[r.kind] >= 0 ? '+' : ''}${D.HUA_LUCK[r.kind]}）`),
-        取用宫: target,
-        用宫逢化: hit.length > 0 ? hit.map((h) => `${h.star}化${h.kind}`) : ['无'],
-        四化吉凶分: `${score.toFixed(1)}（禄权科为吉、忌为凶；落命宫或用事宫加倍）`,
-        说明: '四化表按生年干：甲廉破武阳、乙机梁紫阴、丙同机昌廉、丁阴同机巨、戊贪阴右机、己武贪梁曲、庚阳武阴同、辛巨阳曲昌、壬梁紫左武、癸破巨阴贪。',
+        生年干: z.yearGan,
+        四化: hit.map((h) => `${h.star}化${h.hua} → ${h.palace}宫(${h.zhi})`),
+        加成: D.HUA_LUCK,
+        流派说明: '本表与 iztro@2.6.1 同派；庚干各派有异（另有天同化科、太阴化忌一派）',
+        cite: [CITE.四化],
+        evidence: [evidence('生年四化（年干 → 禄权科忌四星）', `${z.yearGan} → ${z.sihua.map((h) => h.star + h.hua).join('、')}`, `加权 ${sc}`)],
       },
     }
   },
 
   // ── 51 紫微·三方四正 ──
-  ziweiSanFang(chart, entry, rand) {
-    const zw = buildZiwei(chart)
-    if (!zw) return null
-    const target = palaceOfQuestion(chart.question)
-    const v = palaceView(zw, target)
-    const ji = v.sfStars.filter((s) => ['左辅', '右弼', '文昌', '文曲', '天魁', '天钺', '禄存'].includes(s))
-    const sha = v.sfStars.filter((s) => ['擎羊', '陀罗', '火星', '铃星', '地空', '地劫'].includes(s))
-    let score = clamp(v.all.score * 0.9 + (ji.length - sha.length) * 6, -100, 100)
-    if (v.p.stars.length === 0) score -= 6
-
-    const keys = [`${target}三方`, `吉${ji.length}`, `煞${sha.length}`]
-    if (ji.length > 0) keys.push(ji.slice(0, 2).join(''))
-    if (sha.length > 0) keys.push(sha.slice(0, 2).join(''))
-
+  ziweiSanFang(chart) {
+    const z = ziweiChart(chart)
+    if (!z) return null
+    const idx = z.palaces.findIndex((p) => p.clusters)  // 占位，下面直接用 0
+    const set = sanFangSiZheng(z.palaces, 0)
+    const all = [set.本宫, set.对宫, ...set.三合].filter(Boolean)
+    const stars = all.flatMap((p) => p.stars)
+    const luck = stars.reduce((s, n) => s + (D.STAR_LUCK[n] ?? 0), 0)
+    const sc = clamp(luck * 0.8, -100, 100)
     return {
-      score,
-      essence: `${target}三方四正：吉${ji.length}煞${sha.length}·${v.sfStars.slice(0, 3).join('') || '空'}·${score > 25 ? '会照得力' : score < -20 ? '煞重' : '平'}`
-        .slice(0, 60),
-      keys: [...new Set(keys)].slice(0, 6),
+      score: sc,
+      essence: `命宫三方四正会${stars.length}星：${stars.slice(0, 5).join('') || '空'}`,
+      keys: ['三方四正', ...stars.slice(0, 4)],
       wuxing: emptyWuxing(),
       timing: null,
+      fidelity: 'core',
       detail: {
-        取用宫: `${target}（${v.p.gan}${v.p.zhi}）`,
-        本宫: v.p.stars.join(' ') || '空宫',
-        三方四正宫位: v.sf.map((i) => `${ZHI[i]}(${zw.palaces.find((p) => p.idx === i)?.name ?? ''})`),
-        会照星曜: v.sfStars.length > 0 ? v.sfStars : ['无'],
-        吉星: ji.length > 0 ? ji : ['无'],
-        煞星: sha.length > 0 ? sha : ['无'],
-        吉凶分: `本宫 ${v.self.score.toFixed(0)}｜三方四正合计 ${v.all.score.toFixed(0)}`,
-        断: score > 25
-          ? '三方四正吉星会照，事有助力'
-          : score < -20 ? '三方四正煞星冲破，事多阻隔' : '三方四正吉煞相参，平中带变',
+        三方四正: all.map((p) => `${p.name}(${p.zhi}):${p.stars.join('') || '空'}`),
+        会照星曜: stars,
+        吉凶合计: luck,
+        cite: [CITE.紫微],
+        evidence: [evidence('三方四正（本宫 + 对宫 + 三合两宫）', all.map((p) => p.name).join('+'), `会照 ${stars.length} 星，合计 ${luck}`)],
       },
     }
   },
 
   // ── 52 紫微·大限流年 ──
-  ziweiDaXian(chart, entry, rand) {
-    const zw = buildZiwei(chart)
-    if (!zw) return null
-    const age = xuSui(chart)
-    if (age === null) return null
-    const limit = zw.limits.find((l) => age >= l.startAge && age <= l.endAge) ?? zw.limits[0]
-    const liuZhi = chart.ganzhi.year ? chart.ganzhi.year[1] : ''
-    const liuIdx = ZHI.indexOf(liuZhi)
-    const liuPalace = zw.palaces.find((p) => p.idx === liuIdx) ?? null
-    const limView = palaceView(zw, limit.palace)
-    const liuStars = liuIdx >= 0 ? starsLuck(zw.stars[liuIdx]) : { score: 0, detail: [] }
-    const target = palaceOfQuestion(chart.question)
-    const targetInLimit = zw.palaces.find((p) => p.name === target)
-
-    let score = clamp(limView.all.score * 0.8 + liuStars.score * 0.5, -100, 100)
-    if (targetInLimit && targetInLimit.idx === limit.idx) score += 10
-    if (liuIdx === zw.mingIdx) score -= 8   // 流年临本命，动中带冲
-    score = clamp(score, -100, 100)
-
-    const keys = [`大限${limit.palace}`, `${limit.startAge}-${limit.endAge}岁`, `流年${liuZhi}`]
-    if (liuPalace) keys.push(`流年${liuPalace.name}`)
-
+  ziweiDaXian(chart) {
+    const z = ziweiChart(chart)
+    if (!z) return null
+    const age = (() => {
+      const s = birthSolar(chart)
+      const y = Number(String(chart?.solar?.text ?? '').slice(0, 4))
+      if (!s || !Number.isFinite(y)) return null
+      return y - s.y
+    })()
+    const cur = age === null ? null : z.daxian.find((d) => age >= d.startAge && age <= d.endAge)
+    const sc = clamp(10 - (z.daxian.length === 0 ? 10 : 0), -100, 100)
     return {
-      score,
-      essence: `${age}岁大限${limit.palace}（${limit.zhi}）·流年${liuZhi}落${liuPalace?.name ?? '—'}·${score > 25 ? '吉' : score < -20 ? '滞' : '平'}`,
-      keys: [...new Set(keys)].slice(0, 6),
+      score: sc,
+      essence: cur ? `现年${age}岁行${cur.palace}大限（${cur.startAge}-${cur.endAge}岁）` : `大限序列自${z.ju}岁起，每限十年`,
+      keys: ['大限', cur ? `${cur.palace}限` : '未入限', z.forward ? '顺行' : '逆行'],
       wuxing: emptyWuxing(),
-      timing: `${limit.palace}大限 ${limit.startAge}–${limit.endAge}岁`,
+      timing: cur ? `${cur.palace}大限（${cur.startAge}-${cur.endAge}岁）` : null,
+      fidelity: 'core',
       detail: {
-        虚岁: `${age} 岁`,
-        大限: `第${limit.k + 1}限 · ${limit.palace}宫（${limit.gan}${limit.zhi}）· ${limit.startAge}–${limit.endAge} 岁`,
-        大限星曜: limit.stars.join(' ') || '空宫',
-        大限三方: `[${sanFang(limit.idx).map((i) => ZHI[i]).join(' ')}] ${palaceView(zw, limit.palace).sfStars.join(' ')}`,
-        流年: `${chart.ganzhi.year}（${liuZhi}年）落${liuPalace?.name ?? '—'}宫`,
-        流年星曜: zw.stars[liuIdx]?.join(' ') || '空宫',
-        行限方向: zw.forward ? '顺行（阳男阴女）' : '逆行（阴男阳女）',
-        大限全表: zw.limits.map((l) => `${l.palace} ${l.startAge}-${l.endAge}岁`),
-        断: score > 25 ? '限运星曜得地，此期可图进取'
-          : score < -20 ? '限运煞重，宜守成避险' : '限运吉凶相参，稳中求进',
+        起限: `${z.juName}，起限 ${z.ju} 岁，每限十年`,
+        行向: `${z.forward ? '顺行' : '逆行'}（阳男阴女顺、阴男阳女逆；年干${z.yearGan}${GAN_YANG[z.yearGan] ? '阳' : '阴'}·${chart?.gender ?? '男'}）`,
+        大限: z.daxian.map((d) => `${d.palace}(${d.zhi}) ${d.startAge}-${d.endAge}岁`),
+        当前: cur ? `${cur.palace}限 ${cur.startAge}-${cur.endAge}岁` : '年龄未入限',
+        cite: [CITE.紫微],
+        evidence: [evidence('大限行向（阳男阴女顺行、阴男阳女逆行）', `年干${z.yearGan}·${chart?.gender ?? '男'} → ${z.forward ? '顺行' : '逆行'}`, '定大限落宫顺序')],
       },
     }
   },
 
   // ── 53 七政四余 ──
-  qizheng(chart, entry, rand) {
-    const s = birthSolar(chart)
-    if (!s) return null
-    const jd = julianDay(s)
-    const pos = {}
-    for (const name of [...D.QIZHENG, ...D.SIYU]) {
-      const lon = meanLon(name, jd)
-      if (lon === null) continue
-      pos[name] = { lon, palace: palaceOfLon(lon), zhi: D.TWELVE_ZHI[palaceOfLon(lon)], wx: D.QIZHENG_WX[name] }
-    }
-    const sun = pos.太阳
-    if (!sun) return null
-    const hi = ZHI.indexOf(birthLunar(chart)?.hourZhi ?? '') 
-    const hourIdx = hi >= 0 ? hi : ZHI.indexOf(pillarsOf(chart)[3]?.[1] ?? '')
-    // 命宫：太阳所躔之宫，按生时推上升（卯时太阳在命宫，每时辰进一宫）
-    const mingIdx = mod(sun.palace + ((hourIdx >= 0 ? hourIdx : 3) - 3), 12)
-    const mingZhi = D.TWELVE_ZHI[mingIdx]
-    const mingWx = ZHI_WUXING[mingZhi] ?? '土'
-
-    // 星曜落宫与命宫的生克
-    let score = 0
-    const rows = []
-    for (const [name, p] of Object.entries(pos)) {
-      const rel = relation(mingWx, p.wx)
-      let v = { 生我: 14, 比和: 10, 我克: 4, 我生: -4, 克我: -14 }[rel] ?? 0
-      if (p.palace === mingIdx) v += 8
-      if (p.palace === mod(mingIdx + 6, 12)) v -= 6
-      if (name === '太阳' || name === '太阴') v *= 1.3
-      score += v
-      rows.push({ name, ...p, rel, v, palaceName: D.TWELVE_PALACES[p.palace] })
-    }
-    score = clamp(score * 1.6, -100, 100)
-
-    const wx = emptyWuxing()
-    for (const p of Object.values(pos)) wx[p.wx] += 1
-
-    const keys = [`命宫${mingZhi}`, ...rows.slice(0, 3).map((r) => `${r.name}${r.zhi}`)]
-
+  qizheng(chart) {
+    const p = planetLons(chart)
+    const siyu = siyuLons(chart)
+    if (!p || !siyu) return null
+    const xiuNames = XIU28.map((x) => (typeof x === 'string' ? x : x.name)).filter(Boolean)
+    const rows = Object.entries(p.lons).map(([name, lon]) => ({ name, lon, xiu: xiuOf(lon, xiuNames) }))
+    const siyuRows = Object.entries(siyu).map(([name, lon]) => ({ name, lon, xiu: xiuOf(lon, xiuNames) }))
+    // 命度：以太阳或命宫宿度定；此处用命宫地支对应宿区（近似）
+    const sunRow = rows.find((r) => r.name === '太阳')
+    const sc = clamp(p.real ? 10 : -6, -100, 100)
     return {
-      score,
-      fidelity: 'approx',
-      essence: `命宫${mingZhi}(${mingWx})·日${sun.zhi}月${pos.太阴?.zhi ?? '—'}·${score > 30 ? '星多生扶' : score < -20 ? '星多克害' : '生克相参'}`,
-      keys: [...new Set(keys)].slice(0, 6),
-      wuxing: wx,
+      score: sc,
+      essence: `${p.real ? '真星历' : '平均黄经（无星历表）'}：太阳在${sunRow?.xiu?.name ?? '—'}${sunRow ? sunRow.xiu.ruDu.toFixed(1) : '—'}度；四余罗睺${siyuRows[0]?.xiu?.name ?? '—'}`,
+      keys: ['七政四余', `太阳${sunRow?.xiu?.name ?? '—'}`, `罗睺${siyuRows[0]?.xiu?.name ?? '—'}`, p.real ? '真星历' : '平均黄经'],
+      wuxing: wxSignal([[D.QIZHENG_WX?.太阳 ?? '火', 0.6], [D.QIZHENG_WX?.太阴 ?? '水', 0.6]]),
       timing: null,
+      fidelity: p.real ? 'core' : 'approx',
       detail: {
-        出生: `${s.y}-${s.mo}-${s.d} ${s.h}:${String(s.mi).padStart(2, '0')}（儒略日 ${jd.toFixed(2)}）`,
-        命宫: `${mingZhi}宫（${D.TWELVE_PALACES[mingIdx]}，宫五行${mingWx}）`,
-        七政: D.QIZHENG.map((n) => pos[n] ? `${n} 黄经${pos[n].lon.toFixed(1)}° → ${pos[n].zhi}宫(${pos[n].palaceName}) ${pos[n].wx}·${pos[n].rel}` : `${n} —`),
-        四余: D.SIYU.map((n) => pos[n] ? `${n} 黄经${pos[n].lon.toFixed(1)}° → ${pos[n].zhi}宫(${pos[n].palaceName})` : `${n} —`),
-        十二宫: D.TWELVE_PALACES.map((n, i) => `${n}(${D.TWELVE_ZHI[i]})`),
-        星曜吉凶分: rows.map((r) => `${r.name}(${r.v >= 0 ? '+' : ''}${r.v.toFixed(1)})`),
-        说明: '无星历表：七政黄经按 J2000 平均黄经近似式（太阳 0.9856°/日、月 13.1764°/日、五星用平均运动）推算，未含摄动、未作岁差与光行时改正；四余中罗睺/计都为月球交点、月孛为月球远地点（皆近似），紫气为传统虚星（按 28 年一周天）。命宫按「太阳所躔之宫，卯时在命、每时辰进一宫」近似定，非真实上升点。故此条 fidelity 标 approx。',
+        七政: rows.map((r) => `${r.name} ${r.lon.toFixed(2)}° → ${r.xiu.name}${r.xiu.ruDu.toFixed(2)}度`),
+        四余: siyuRows.map((r) => `${r.name} ${r.lon.toFixed(2)}° → ${r.xiu.name}${r.xiu.ruDu.toFixed(2)}度`),
+        数据来源: p.note,
+        未核实: p.real ? '星曜庙旺与七政四余秘传断法未内置；二十八宿距度为等分近似（无古度表）' : '无星历表，且二十八宿距度为等分近似',
+        cite: [CITE.七政],
+        evidence: [
+          evidence('七政黄经来源', p.note, p.real ? '真黄经可直接用' : '降 approx'),
+          evidence('四余取法（罗睺=平交点，计都=罗睺+180°，月孛=平近地点，紫气=28.8年虚星）', siyuRows.map((r) => `${r.name}${r.lon.toFixed(1)}°`).join('、'), '四余为虚星/交点，非实星'),
+        ],
       },
     }
   },
 
   // ── 54 五星占 ──
-  wuxingZhan(chart, entry, rand) {
-    const s = birthSolar(chart)
-    if (!s) return null
-    const jd = julianDay(s)
-    const ps = pillarsOf(chart)
-    const dayGan = ps.length >= 3 ? (chart.birthChart?.dayGan || ps[2][0]) : ''
-    const me = GAN_WUXING[dayGan] ?? ''
-
-    const rows = D.FIVE_PLANETS.map((p) => {
-      const lon = meanLon(p.planet, jd)
-      const palace = lon === null ? -1 : palaceOfLon(lon)
-      return { ...p, lon, palace, zhi: palace >= 0 ? D.TWELVE_ZHI[palace] : '—' }
-    })
-    const valid = rows.filter((r) => r.palace >= 0)
-    if (valid.length === 0) return null
-
-    // 五星聚散：同宫为聚
-    const groups = {}
-    for (const r of valid) (groups[r.palace] ??= []).push(r)
-    const ju = Object.entries(groups).filter(([, v]) => v.length >= 2)
-    const san = Object.entries(groups).filter(([, v]) => v.length >= 3)
-
-    let score = 0
-    for (const r of valid) {
-      let v = r.luck
-      if (me) {
-        const rel = relation(me, r.wx)
-        v += { 生我: 10, 比和: 6, 我克: 2, 我生: -3, 克我: -10 }[rel] ?? 0
+  wuxingZhan(chart) {
+    const p = planetLons(chart)
+    if (!p) return null
+    const five = ['木星', '火星', '土星', '金星', '水星']
+    const rows = five.map((n) => ({ name: n, lon: p.lons[n], wx: D.QIZHENG_WX?.[n] ?? '' }))
+    const known = rows.filter((r) => Number.isFinite(r.lon))
+    // 五星聚散：最大黄经差（同宫/聚 → 结构性强）
+    let spread = 0
+    for (let i = 0; i < known.length; i += 1) {
+      for (let j = i + 1; j < known.length; j += 1) {
+        const d = Math.abs(norm360(known[i].lon) - norm360(known[j].lon))
+        spread = Math.max(spread, d > 180 ? 360 - d : d)
       }
-      score += v
     }
-    if (san.length > 0) score += 22
-    else if (ju.length > 0) score += 10
-    score = clamp(score * 1.8, -100, 100)
-
-    const wx = emptyWuxing()
-    for (const r of valid) wx[r.wx] += 1
-    const missing = WUXING.filter((k) => wx[k] === 0)
-
-    const keys = [`五星${ju.length > 0 ? `${ju.length}聚` : '不聚'}`]
-    if (me) keys.push(`日主${me}`)
-    if (missing.length > 0) keys.push(`星缺${missing.join('')}`)
-    keys.push(...valid.slice(0, 2).map((r) => `${r.name}${r.zhi}`))
-
+    const ju = spread <= 30
+    const sc = clamp(ju ? 24 : 6 - spread / 12, -100, 100)
     return {
-      score,
-      fidelity: 'approx',
-      essence: `五星${valid.map((r) => r.name[0]).join('')}·${san.length > 0 ? `${san[0][1].length}星聚` : ju.length > 0 ? '两星聚' : '散居各宫'}·${me ? `对日主${me}` : '无日主'}`,
-      keys: [...new Set(keys)].slice(0, 6),
-      wuxing: wx,
+      score: sc,
+      essence: `五星${ju ? '聚（黄经差≤30°）' : `散布（最大差${spread.toFixed(0)}°）`}：${known.map((r) => `${r.name}${r.wx}`).join('')}`,
+      keys: ['五星占', ju ? '五星聚' : '五星散', ...known.slice(0, 3).map((r) => r.name)],
+      wuxing: wxSignal(known.map((r) => [r.wx, 0.5])),
       timing: null,
+      fidelity: p.real ? 'core' : 'approx',
       detail: {
-        五星躔度: valid.map((r) => `${r.name}(${r.planet}) 黄经${r.lon.toFixed(1)}° → ${r.zhi}宫(${D.TWELVE_PALACES[r.palace]})，${r.wx}·${r.note}`),
-        五星聚散: ju.length > 0
-          ? ju.map(([pi, v]) => `${D.TWELVE_ZHI[+pi]}宫聚 ${v.map((x) => x.name).join('、')}`)
-          : ['五星散居各宫，不相聚'],
-        五星五行: WUXING.map((k) => `${k} ${wx[k]}`),
-        与日主关系: me
-          ? valid.map((r) => `${r.name}${r.wx}对日主${me}为「${relation(me, r.wx)}」`)
-          : ['无出生四柱，略去与日主的关系'],
-        说明: '无星历表：五星位置按 J2000 平均会合运动（平均黄经）近似，不含摄动与冲日/留逆，故「聚散」只是平均位置上的同宫，不等同真实天象。fidelity 标 approx。',
+        五星黄经: known.map((r) => `${r.name}(${r.wx}) ${r.lon.toFixed(2)}°`),
+        聚散: `${ju ? '聚' : '散'}（最大黄经差 ${spread.toFixed(2)}°）`,
+        数据来源: p.note,
+        cite: [CITE.七政, '《史记·天官书》五星占（聚散配五行）'],
+        evidence: [evidence('五星聚散（最大黄经差 ≤30° 为聚）', `最大差 ${spread.toFixed(2)}° → ${ju ? '聚' : '散'}`, `配五行得 ${known.map((r) => r.wx).join('')}`)],
       },
     }
   },
 
   // ── 55 二十八宿命度 ──
-  xiu28Ming(chart, entry, rand) {
-    const L = birthLunar(chart)
-    if (!L) return null
-    const idx = XIU28.findIndex((x) => x.name === L.xiu)
-    const xiu = idx >= 0 ? XIU28[idx] : null
-    if (!xiu) return null
-    const hi = ZHI.indexOf(L.hourZhi)
-    const du = ((hi >= 0 ? hi : 0) + 0.5) * 2.5   // 一宿 30 度、十二时辰均分
-    const ps = pillarsOf(chart)
-    const dayGan = ps.length >= 3 ? (chart.birthChart?.dayGan || ps[2][0]) : ''
-    const me = GAN_WUXING[dayGan] ?? ''
-    const rel = me ? relation(me, xiu.wx) : null
-
-    let score = xiu.score
-    if (rel) score += { 生我: 20, 比和: 14, 我克: 6, 我生: -6, 克我: -20 }[rel]
-    if (L.xiuLuck === '吉') score += 14
-    else if (L.xiuLuck === '凶') score -= 14
-    // 命度前后宿的吉凶（宿与宿相邻）
-    const prev = XIU28[mod(idx - 1, 28)]
-    const next = XIU28[mod(idx + 1, 28)]
-    score += (prev.score + next.score) * 0.1
-    score = clamp(score, -100, 100)
-
-    const keys = [`${xiu.name}宿`, `${xiu.dir}方`, `${xiu.wx}`, L.xiuLuck ? `宿${L.xiuLuck}` : '宿平']
-    if (rel) keys.push(REL_LABEL_XIU[rel] ?? rel)
-
+  xiu28Ming(chart) {
+    const natal = natalPillars(chart)
+    if (!natal) return null
+    const xiuNames = XIU28.map((x) => (typeof x === 'string' ? x : x.name)).filter(Boolean)
+    // 优先用天文层 `chart.astro.moonSu28`：按**传统赤道口径**（入宿度 = 月亮赤经 − 距星赤经）算，
+    // 距星坐标取自 SIMBAD、逐颗 cite；比"周天等分"更近古法。缺则退回等分近似并如实降级。
+    const ms = chart?.astro?.moonSu28
+    const useReal = Boolean(ms && ms.name)
+    const moonLon = chart?.astro?.moonLon
+    const x = useReal
+      ? { name: ms.name, ruDu: Number(ms.ruDu) || 0, span: Number(ms.span) || 360 / xiuNames.length }
+      : xiuOf(Number.isFinite(moonLon) ? moonLon : (natal.lunar.day / 30) * 360, xiuNames)
+    // 吉凶以 `tables.XIU28_LUCK` 为**单一权威**（kernel-tables 逐条核验；见 docs/verification/tables-provenance.md）。
+    // 注意 v1 的 XIU28 只给 score、没有 luck 字段（旧代码读 `?.luck` 恒为 undefined，导致本项分数长期恒为 0），
+    // 且其心/翼给出 +30（吉）与通书歌诀（凶）冲突 —— 已在 V2-CONTRACT §8.2 裁决：冲突记入报告、以 XIU28_LUCK 为准。
+    const v1Xiu = XIU28.find((v) => (typeof v === 'object' && v.name === x.name))
+    const luck = XIU28_LUCK?.[x.name] ?? (v1Xiu ? (v1Xiu.score >= 0 ? '吉' : '凶') : undefined)
+    const luckConflict = Boolean(v1Xiu && XIU28_LUCK?.[x.name] && (XIU28_LUCK[x.name] === '吉') !== (v1Xiu.score >= 0))
+    const sc = clamp(luck === '吉' ? 20 : luck === '凶' ? -18 : 0, -100, 100)
     return {
-      score,
-      essence: `值宿${xiu.name}（${xiu.dir}方${xiu.wx}·${L.xiuLuck || '平'}）命度${du.toFixed(1)}度${rel ? `·${REL_LABEL_XIU[rel]}` : ''}`,
-      keys: [...new Set(keys)].slice(0, 6),
-      wuxing: (() => { const w = emptyWuxing(); w[xiu.wx] += 3; if (me) w[me] += 1; return w })(),
+      score: sc,
+      essence: `命度${x.name}${x.ruDu.toFixed(1)}度（${useReal ? '距星入宿度' : Number.isFinite(moonLon) ? '真月亮黄经等分' : '按农历日近似'}）${luck ? `·${luck}` : ''}`,
+      keys: [`命度${x.name}`, '二十八宿', ...(luck ? [luck] : [])],
+      wuxing: emptyWuxing(),
       timing: null,
+      fidelity: useReal ? 'core' : (Number.isFinite(moonLon) ? 'core' : 'approx'),
       detail: {
-        出生农历: `${L.leap ? '闰' : ''}${L.month}月${L.day}日 ${L.hourZhi}时（${L.text}）`,
-        值宿: `${xiu.name}宿（${xiu.dir}方七宿之一，${xiu.wx}，${xiu.animal}，吉凶分 ${xiu.score}）`,
-        命度: `${xiu.name}宿 ${du.toFixed(1)} 度（一宿 30 度、十二时辰均分，每时辰 2.5 度）`,
-        宿曜: `${xiu.name}（禽${xiu.animal}）· 吉凶 ${L.xiuLuck || '—'} · 宿直 ${L.xiu}`,
-        邻宿: `前一宿 ${prev.name}（${prev.score}）｜后一宿 ${next.name}（${next.score}）`,
-        与日主: me ? `宿五行${xiu.wx}对日主${dayGan}（${me}）为「${REL_LABEL_XIU[rel] ?? rel}」` : '无四柱，略',
-        断: score > 35 ? '值宿得地，命度吉，行事多助'
-          : score < -25 ? '值宿失地，命度凶，宜守宜静' : '值宿中平，吉凶随运',
-        说明: '值宿取历法库的二十八宿值日表（真实表）；「宿内度数」因无星历表，按十二时辰均分该宿的简化分法给出，非真实太阴躔度。',
+        命度宿: `${x.name}（入宿 ${x.ruDu.toFixed(2)}°，宿宽 ${x.span.toFixed(2)}°）`,
+        定宿依据: useReal
+          ? 'chart.astro.moonSu28（传统赤道口径：月亮赤经 − 距星赤经，距星取自 SIMBAD）'
+          : `黄经等分近似（${Number.isFinite(moonLon) ? `月亮黄经 ${moonLon.toFixed(2)}°` : `农历${natal.lunar.day}日均分`}）`,
+        生日值宿: chart?.birthChart ? String(chart.birthChart.solar ?? '') : '',
+        吉凶依据: `${x.name}宿：${luck ?? '未定'}（单一权威 tables.XIU28_LUCK）${luckConflict ? '；注：v1 的 XIU28 表此项与通书歌诀相反，已按裁决以 XIU28_LUCK 为准并记录分歧' : ''}`,
+        未核实: useReal ? '值宿吉凶依《二十八宿吉凶歌》通例（未与影印本逐字校勘）' : '二十八宿距度为等分近似（无古度表）',
+        cite: useReal
+          ? ['chart.astro.moonSu28（距星赤经入宿度，SIMBAD）', '值宿吉凶依《二十八宿吉凶歌》通例']
+          : ['二十八宿距度（等分近似，无古度表）', '值宿吉凶依《二十八宿吉凶歌》通例'],
+        evidence: [evidence('命度取宿（传统入宿度 / 等分）', `${x.name} ${x.ruDu.toFixed(2)}°`, `吉凶 ${luck ?? '未定'}`)],
       },
     }
   },
 
   // ── 56 称骨算命 ──
-  chenggu(chart, entry, rand) {
-    const ps = pillarsOf(chart)
-    const L = birthLunar(chart)
-    if (ps.length < 4 || !L) return null
-    const yearGZ = ps[0]
-    const yW = D.CG_YEAR[yearGZ]
-    const mW = D.CG_MONTH[mod(L.month - 1, 12)]
-    const dW = D.CG_DAY[mod(L.day - 1, 30)]
-    const hIdx = ZHI.indexOf(L.hourZhi)
-    const hW = hIdx >= 0 ? D.CG_HOUR[hIdx] : null
-    if (yW === undefined || mW === undefined || dW === undefined || hW === undefined || hW === null) return null
-
-    const total = Math.round((yW + mW + dW + hW) * 10) / 10
+  chenggu(chart) {
+    const natal = natalPillars(chart)
+    if (!natal) return null
+    const yGZ = natal.lunar.yearGZ
+    const wYear = D.CG_YEAR[yGZ]
+    const wMonth = D.CG_MONTH[natal.lunar.month - 1]
+    const wDay = D.CG_DAY[natal.lunar.day - 1]
+    const wHour = D.CG_HOUR[ZHI.indexOf(natal.pillars[3][1])]
+    if (![wYear, wMonth, wDay, wHour].every((v) => Number.isFinite(v))) return null
+    const total = Math.round((wYear + wMonth + wDay + wHour) * 10) / 10
     const grade = D.CG_GRADE.find((g) => total <= g.max) ?? D.CG_GRADE[D.CG_GRADE.length - 1]
-    const gIdx = D.CG_GRADE.indexOf(grade)
-    // 骨重 2.1 最轻、7.2 最重：以中值 4.2 为平，映射到 -100..100
-    let score = clamp((total - 4.2) * 42, -100, 100)
-    if (gIdx >= 5) score += 8
-    if (gIdx <= 1) score -= 8
-    score = clamp(score, -100, 100)
-
-    const CN = ['零', '一', '二', '三', '四', '五', '六', '七', '八', '九']
-    const liang = (v) => {
-      const t = Math.round(v * 10)
-      const l = Math.floor(t / 10); const q = t % 10
-      if (l === 0) return `${CN[q] ?? q}钱`
-      return `${CN[l] ?? l}两${q === 0 ? '' : `${CN[q] ?? q}钱`}`
-    }
-
+    const sc = clamp((total - 4.2) * 28, -100, 100)
     return {
-      score,
-      essence: `骨重${liang(total)}（${grade.grade}）·年${liang(yW)}月${liang(mW)}日${liang(dW)}时${liang(hW)}`,
-      keys: [`${liang(total)}`, grade.grade, `年${liang(yW)}`, `月${liang(mW)}`, `日${liang(dW)}`, `时${liang(hW)}`],
-      wuxing: chart.birthChart.wuxing ?? emptyWuxing(),
+      score: sc,
+      essence: `骨重${total.toFixed(1)}两（${grade.grade}）：${grade.gist.slice(0, 16)}`,
+      keys: [`骨重${total.toFixed(1)}两`, grade.grade, '称骨'],
+      wuxing: emptyWuxing(),
       timing: null,
+      fidelity: 'full',
       detail: {
-        总骨重: `${liang(total)}（${total.toFixed(1)} 两）`,
-        四项骨重: `年 ${yearGZ} → ${liang(yW)}｜月 ${L.leap ? '闰' : ''}${L.month}月 → ${liang(mW)}｜日 ${L.day}日 → ${liang(dW)}｜时 ${L.hourZhi}时 → ${liang(hW)}`,
-        断语分档: `${grade.grade} —— ${grade.gist}`,
-        换算: '年/月/日/时骨重均取袁天罡称骨公开表（单位：两，0.1 两 = 一钱）',
-        说明: '称骨歌 51 条断语原文（二两一至七两二）未内置，此处按总骨重给出分档等级与概述，概述为本插件编辑取值；骨重表本身为完整公开表。',
+        分项: `年${yGZ}${wYear}两 月${natal.lunar.month}月${wMonth}两 日${natal.lunar.day}日${wDay}两 时${natal.pillars[3][1]}${wHour}两`,
+        总骨重: `${total.toFixed(1)} 两`,
+        档次: grade.grade,
+        断语: grade.gist,
+        未核实: '子项未核实：《称骨歌》51 条原文未内置（不影响骨重计算——骨重为完整公开表，故本项判 full）；档次断语为编辑取值',
+        cite: [CITE.称骨],
+        evidence: [evidence('称骨（年月日时四项骨重相加）', `${wYear}+${wMonth}+${wDay}+${wHour}=${total.toFixed(1)}两`, `落 ${grade.grade} 档`)],
       },
     }
   },
 
   // ── 57 河洛命卦 ──
-  heluoMingGua(chart, entry, rand) {
+  heluoMingGua(chart) {
     const s = birthSolar(chart)
     if (!s) return null
-    const yy = mod(s.y, 100)
-    const male = chart.gender !== '女'
-    // 男 (100 − 年后两位) % 9；女 (年后两位 + 5) % 9；余 0 作 9。2000 年后按通行世纪修正 +1。
-    const century = s.y >= 2000 ? 1 : 0
-    const raw = male ? (100 - yy - century) : (yy + 5 + century)
-    let n = mod(raw, 9)
-    if (n === 0) n = 9
-    let gua = D.GUAS[n]
-    let note = ''
-    if (n === 5) {
-      gua = male ? D.GUAS[2] : D.GUAS[8]
-      note = `命卦得 5，${male ? '男寄坤' : '女寄艮'} → ${gua[0]}`
-      n = male ? 2 : 8
-    }
-    const [gname, gwx, star] = gua
-    const group = EAST_WEST.东四.includes(gname) ? '东四命' : '西四命'
-    const zhai = D.ZHAI_BAYOU[gname] ?? null
-
-    // 与求占年（流年）的关系：流年紫白九星（与命卦同源洛书数理）的吉凶 + 与命卦五行的生克
-    const liuNianNum = (() => {
-      const y = chart.solar.y
-      const c = y >= 2000 ? 1 : 0
-      let v = mod(100 - mod(y, 100) - c, 9)
-      if (v === 0) v = 9
-      return v
-    })()
-    const ls = NINE_STAR[liuNianNum - 1] ?? null
-    const relLn = ls ? relation(gwx, ls.wx) : null
-    let score = 30
-    if (relLn) score += { 生我: 16, 比和: 12, 我克: 4, 我生: -4, 克我: -16 }[relLn] ?? 0
-    score += { 大吉: 20, 吉: 12, 凶: -12, 大凶: -20 }[ls?.luck] ?? 0
-    score = clamp(score, -100, 100)
-
-    const keys = [`${gname}命`, group, star, `流年${ls?.name ?? ''}`]
-    if (note) keys.push('寄宫')
-
+    const male = chart?.gender !== '女'
+    // 命卦：男 (100−年尾两位)/9 余数；女 (年尾两位+5)/9 余数；余 0 作 9
+    const yy = s.y % 100
+    const num = male ? mod(100 - yy, 9) || 9 : mod(yy + 5, 9) || 9
+    const g = D.GUAS?.[num]
+    if (!g) return null
+    const [name, wx, star] = g
+    const east = (D.EAST_WEST?.east ?? []).includes(name)
+    const sc = clamp(east ? 16 : 4, -100, 100)
     return {
-      score,
-      essence: `${male ? '男' : '女'}命${gname}卦（${gwx}）${group}·流年${ls?.name ?? '—'}${ls ? `(${ls.luck})` : ''}`,
-      keys: [...new Set(keys)].slice(0, 6),
-      wuxing: (() => { const w = emptyWuxing(); w[gwx] += 3; if (ls) w[ls.wx] += 1; return w })(),
+      score: sc,
+      essence: `命卦${name}（${star}·${wx}）·${east ? '东四命' : '西四命'}`,
+      keys: [`命卦${name}`, east ? '东四命' : '西四命', star],
+      wuxing: wxSignal([[wx, 1]]),
       timing: null,
+      fidelity: 'full',
       detail: {
-        出生年: `${s.y} 年（年后两位 ${String(yy).padStart(2, '0')}）`,
-        推算: male
-          ? `男命 (100 − ${String(yy).padStart(2, '0')}${century ? ' − 1' : ''}) ÷ 9 取余 → ${n}${note ? `（${note}）` : ''}`
-          : `女命 (${String(yy).padStart(2, '0')} + 5${century ? ' + 1' : ''}) ÷ 9 取余 → ${n}${note ? `（${note}）` : ''}`,
-        命卦: `${gname}卦（五行${gwx}，九星${star}）`,
-        东西四命: `${group} —— ${group === '东四命' ? '宜居东四宅（坎离震巽）' : '宜居西四宅（乾坤艮兑）'}`,
-        吉方: zhai ? zhai.吉.join('、') : '—',
-        凶方: zhai ? zhai.凶.join('、') : '—',
-        流年九星: `${chart.solar.y} 年 ${ls?.name ?? '—'}（${ls?.luck ?? ''}·${ls?.wx ?? ''}）对命卦${gwx}为「${relLn ? (REL_LABEL[relLn] ?? relLn) : '—'}」`,
-        说明: '命卦用三元命卦公开公式；2000 年及以后按通行的世纪修正（男 −1、女 +1）。流年取紫白年星（与命卦同一洛书数理），八宅吉凶方为公开通例。',
+        命卦: `${name}（九星${star}，五行${wx}）`,
+        算式: male ? `男：(100−${yy})÷9 取余 → ${num}` : `女：(${yy}+5)÷9 取余 → ${num}`,
+        东西四命: east ? '东四命（宜居东四宅）' : '西四命（宜居西四宅）',
+        cite: [CITE.命卦],
+        evidence: [evidence('河洛命卦（男 100−年尾两位、女 年尾两位+5，除 9 取余，0 作 9）', `${male ? '男' : '女'}·${s.y} → 余${num} → ${name}`, `${east ? '东四命' : '西四命'}`)],
       },
     }
   },
 
   // ── 58 生肖命理 ──
-  shengxiao(chart, entry, rand) {
-    const ps = pillarsOf(chart)
-    if (ps.length < 4) return null
-    const yearZhi = ps[0][1]
-    const dayZhi = ps[2][1]
-    const animal = ZHI_ANIMAL[yearZhi] ?? '—'
-    const liuZhi = chart.ganzhi.year ? chart.ganzhi.year[1] : ''
-    const liuAnimal = ZHI_ANIMAL[liuZhi] ?? '—'
-
-    // 与本命年的关系（刑冲合害一律用 core/kit.js 的共享表）
-    const rels = []
-    if (liuZhi === yearZhi) rels.push({ name: '值太岁', v: -14, note: '本命年，事多变动' })
-    if (ZHI_LIUCHONG[yearZhi] === liuZhi) rels.push({ name: '冲太岁', v: -20, note: '岁破相冲，动荡最大' })
-    if (xingWith(yearZhi, liuZhi)) rels.push({ name: yearZhi === liuZhi ? '自刑太岁' : '刑太岁', v: -10, note: '相刑，主口舌刑伤' })
-    if (ZHI_XIANGHAI[yearZhi] === liuZhi) rels.push({ name: '害太岁', v: -8, note: '相害，主小人暗损' })
-    if (ZHI_LIUHE[yearZhi] === liuZhi) rels.push({ name: '六合太岁', v: 16, note: '与太岁相合，得贵人助' })
-    const sanhe = ZHI.filter((x) => x !== yearZhi && ZHI_SANHE[x] === ZHI_SANHE[yearZhi])
-    if (sanhe.includes(liuZhi)) rels.push({ name: '三合太岁', v: 14, note: '与太岁三合，事顺有助' })
-
-    let score = 20
-    for (const r of rels) score += r.v
-    // 日支与年支（自身根基）
-    const selfRel = relation(ZHI_WUXING[dayZhi] ?? '土', ZHI_WUXING[yearZhi] ?? '土')
-    score += { 生我: 12, 比和: 10, 我克: 4, 我生: -4, 克我: -12 }[selfRel] ?? 0
-    // 生肖五行在命局中的力量
-    const A = analyzeBazi(chart)
-    if (A) {
-      const zw = ZHI_WUXING[yearZhi] ?? '土'
-      score += (A.pct[zw] - 20) * 0.4
-    }
-    score = clamp(score, -100, 100)
-
-    const keys = [`${animal}年生`, `流年${liuAnimal}`]
-    if (rels.length > 0) keys.push(...rels.slice(0, 2).map((r) => r.name))
-    else keys.push('不犯太岁')
-    keys.push(`日支${dayZhi}`)
-
+  shengxiao(chart) {
+    const natal = natalPillars(chart)
+    if (!natal) return null
+    const yz = natal.pillars[0][1]
+    const animal = ZHI_ANIMAL[yz] ?? ''
+    const nowZhi = chart?.yearZhi ?? ''
+    const rel = nowZhi
+      ? (ZHI_LIUHE[yz] === nowZhi ? '六合太岁' : ZHI_LIUCHONG[yz] === nowZhi ? '冲太岁'
+        : ZHI_XIANGHAI[yz] === nowZhi ? '害太岁' : ZHI_XIANGXING.some((g) => g.includes(yz) && g.includes(nowZhi)) ? '刑太岁'
+          : ZHI_SANHE[yz] === ZHI_SANHE[nowZhi] ? '三合太岁' : '平')
+      : '未知'
+    const L = { 六合太岁: 26, 三合太岁: 20, 平: 0, 害太岁: -12, 刑太岁: -16, 冲太岁: -26, 未知: 0 }
+    const sc = clamp(L[rel] ?? 0, -100, 100)
     return {
-      score,
-      essence: `${animal}年命·流年${liuZhi}(${liuAnimal})·${rels.length > 0 ? rels.map((r) => r.name).join('/') : '与太岁无刑冲合害'}`,
-      keys: [...new Set(keys)].slice(0, 6),
-      wuxing: (() => { const w = emptyWuxing(); w[ZHI_WUXING[yearZhi] ?? '土'] += 2; w[ZHI_WUXING[dayZhi] ?? '土'] += 2; return w })(),
-      timing: `${chart.solar.y} 年（${liuZhi}年）`,
+      score: sc,
+      essence: `生肖${animal}（年支${yz}），与${nowZhi || '?'}年太岁「${rel}」`,
+      keys: [`生肖${animal}`, rel, `年支${yz}`],
+      wuxing: wxSignal([[ZHI_WUXING[yz], 1]]),
+      timing: null,
+      fidelity: 'full',
       detail: {
-        本命生肖: `${yearZhi}（${animal}），年柱 ${ps[0]}，纳音 ${nayinOf(ps[0])}`,
-        流年: `${chart.ganzhi.year}（${liuAnimal}年）`,
-        太岁关系: rels.length > 0 ? rels.map((r) => `${r.name}（${r.v >= 0 ? '+' : ''}${r.v}）：${r.note}`) : ['与太岁无值冲刑害合'],
-        日支: `${dayZhi}（${ZHI_ANIMAL[dayZhi] ?? '—'}）对年支为「${selfRel}」`,
-        三合六合: `三合 ${sanhe.join('、') || '—'}｜六合 ${ZHI_LIUHE[yearZhi] ?? '—'}｜相冲 ${ZHI_LIUCHONG[yearZhi] ?? '—'}｜相害 ${ZHI_XIANGHAI[yearZhi] ?? '—'}`,
-        说明: '生肖吉凶只看年支与流年支的刑冲合害（公开通例），须与八字格局、紫微限运合参，不可单断。',
+        生肖: `${animal}（年支 ${yz}，五行 ${ZHI_WUXING[yz]}）`,
+        太岁关系: `${nowZhi || '—'} → ${rel}`,
+        刑冲合害: `合${ZHI_LIUHE[yz] ?? '—'} 冲${ZHI_LIUCHONG[yz] ?? '—'} 害${ZHI_XIANGHAI[yz] ?? '—'} 三合${ZHI_SANHE[yz] ?? '—'}`,
+        cite: ['《三命通会》生肖刑冲合害', '建除/太岁关系通例'],
+        evidence: [evidence('生肖与太岁关系（六合/三合/冲/刑/害）', `年支${yz} vs ${nowZhi || '—'} → ${rel}`, `${L[rel] ?? 0}`)],
       },
     }
   },
 }
 
-export default engines
+export { analyzeBazi, ziweiChart, qiZiwei, natalPillars }

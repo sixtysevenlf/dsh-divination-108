@@ -275,10 +275,30 @@ const r3 = await divine.execute({ question: '这次合作', when: '2026-09-30 14
 check('brief 档不含 108 行明细', !r3.text.includes('108 法明细'))
 check('brief 档比 normal 短', r3.text.length < r1.text.length, `${r3.text.length} vs ${r1.text.length}`)
 
-// 确定性：同问同刻同输入 → 同文本
-const r4 = await divine.execute({ question: '这次和张三的合作能不能成', when: '2026-09-30 14:30', longitude: 116.4, birth: '1990-05-12 09:30', gender: '男', numbers: [7, 13, 21] })
-check('同问同刻结果一致（除编号行）',
-  r4.text.replace(/【求占 #\d+】/, '') === r1.text.replace(/【求占 #\d+】/, ''))
+// 随机性口径（用户 2026-02 更正）：**默认真随机**，同问同刻不再保证同文本；
+// 要复现必须显式传 `seed`。故原「同问同刻结果一致」改为**在 seed 模式下**验证，
+// 并新增「默认随机模式下允许不同」。
+const SAME_INPUT = {
+  question: '这次和张三的合作能不能成',
+  when: '2026-09-30 14:30',
+  longitude: 116.4,
+  birth: '1990-05-12 09:30',
+  gender: '男',
+  numbers: [7, 13, 21],
+}
+const r4 = await divine.execute({ ...SAME_INPUT, seed: 'host-fixed-seed' })
+const r4b = await divine.execute({ ...SAME_INPUT, seed: 'host-fixed-seed' })
+check('seed 模式下 同问同刻同输入 → 同文本（除编号行）',
+  r4.text.replace(/【求占 #\d+】/, '') === r4b.text.replace(/【求占 #\d+】/, ''))
+
+// 默认（无 seed）模式：连求 3 次，至少一次与首次不同（真随机）
+const randTexts = []
+for (let i = 0; i < 3; i += 1) {
+  const rr = await divine.execute({ ...SAME_INPUT })
+  randTexts.push(rr.text.replace(/【求占 #\d+】/, ''))
+}
+check('默认随机模式下 同问同刻重复求占 允许不同（且确实出现过不同）',
+  new Set(randTexts).size > 1, `${new Set(randTexts).size} 种 / 3 次`)
 
 // scope 限定
 const r5 = await divine.execute({ question: '看八字', when: '2026-09-30 14:30', birth: '1990-05-12 09:30', gender: '男', scope: 'category:命理' })
@@ -1379,6 +1399,80 @@ section('13. agent：真工具调用循环 × 消息体形状')
       (doneB?.body.steps ?? []).some((x) => String(x.text ?? '').includes('已跳过')),
       JSON.stringify((doneB?.body.steps ?? []).map((x) => String(x.text).slice(0, 20))))
   }
+  // ── 13h. 一问一答（task-23）：sessionId 续接 · 会话隔离 · 过期如实报错 ──
+  // 关键：断言「模型到底看到了什么」—— 每次 llm.stream 调用时**当场快照** messages，
+  // 而不是事后读 `options.messages`（那是 st.messages 的同一个引用，会随会话继续而变长）。
+  const multiTurns = (turns) => {
+    const snaps = []
+    let i = 0
+    return {
+      snaps,
+      llm: {
+        ...baseLlm,
+        stream: (options) => {
+          snaps.push({
+            len: (options.messages ?? []).length,
+            text: JSON.stringify(options.messages ?? []),
+          })
+          const t = turns[Math.min(i, turns.length - 1)]
+          i += 1
+          return t()
+        },
+      },
+    }
+  }
+  const Q_A1 = '甲会话第一句：这次合作能不能成'
+  const Q_A2 = '甲会话第二句：那应期在几月'
+  const Q_A3 = '甲会话第三句：还有别的吗'
+  const Q_B1 = '乙会话第一句：帮我看看考试'
+  const multi = multiTurns([
+    divineTurn('mt-1', Q_A1), textTurn('判词一：中平偏吉。'),
+    divineTurn('mt-2', Q_A2), textTurn('判词二：倾向十月。'),
+    divineTurn('mt-3', Q_B1), textTurn('判词三：另说。'),
+    divineTurn('mt-4', Q_A3), textTurn('判词四：好。'),
+  ])
+  const rM = localWith(multi.llm, localWeb)
+  const first = await runToEnd(rM, { question: Q_A1, provider: 'p-alpha', model: 'p-alpha-m1', conversation: true })
+  const sidA = first.body.sessionId
+  check('多轮①：首轮响应返回 sessionId（面板据此续接）',
+    first.body.state === 'done' && typeof sidA === 'string' && sidA !== '', JSON.stringify(first.body).slice(0, 140))
+  check('多轮①′：新会话第一句 → 模型只看到 1 条用户消息（没有凭空多出历史）',
+    multi.snaps[0]?.len === 1, `len=${multi.snaps[0]?.len}`)
+
+  const second = await runToEnd(rM, { question: Q_A2, provider: 'p-alpha', model: 'p-alpha-m1', conversation: true, sessionId: sidA })
+  check('多轮②：同 sessionId 第二轮 → 生效（state=done）', second.body.state === 'done', JSON.stringify(second.body).slice(0, 120))
+  check('多轮②′：**模型可见历史**（第二轮 messages 变长，且里面有第一句）',
+    (multi.snaps[2]?.len ?? 0) > (multi.snaps[0]?.len ?? 0) && String(multi.snaps[2]?.text).includes(Q_A1),
+    `len ${multi.snaps[0]?.len} → ${multi.snaps[2]?.len}`)
+
+  // 乙会话：**不带** sessionId → 全新会话，绝不能看到甲说过的话
+  const other = await runToEnd(rM, { question: Q_B1, provider: 'p-alpha', model: 'p-alpha-m1', conversation: true })
+  const sidB = other.body.sessionId
+  check('多轮③：两个不同会话的 sessionId 不同', sidB !== sidA && typeof sidB === 'string', `${sidA} vs ${sidB}`)
+  check('多轮③′：**不串会话** —— 乙会话的模型消息里没有甲会话说过的任何一句',
+    multi.snaps[4]?.len === 1
+    && !String(multi.snaps[4]?.text).includes(Q_A1) && !String(multi.snaps[4]?.text).includes(Q_A2),
+    `len=${multi.snaps[4]?.len} 含甲句=${String(multi.snaps[4]?.text).includes(Q_A1)}`)
+
+  // 甲会话继续第三句：仍然只看得到甲自己的历史（乙的插不进）
+  const third = await runToEnd(rM, { question: Q_A3, provider: 'p-alpha', model: 'p-alpha-m1', conversation: true, sessionId: sidA })
+  check('多轮③″：甲会话第三句仍带完整甲历史，且**没有**乙说的话',
+    third.body.state === 'done' && String(multi.snaps[6]?.text).includes(Q_A1)
+    && String(multi.snaps[6]?.text).includes(Q_A2) && !String(multi.snaps[6]?.text).includes(Q_B1),
+    `len=${multi.snaps[6]?.len}`)
+
+  // 过期/不存在的 sessionId：如实 409 + code，**绝不静默新建**（静默新建 = 悄悄串会话）
+  const stale = await rt(rM, { question: '用过期会话发一句', provider: 'p-alpha', model: 'p-alpha-m1', conversation: true, sessionId: 'ag-not-exist' })
+  check('多轮④：不存在的 sessionId → 409 且 code=stale-session（不静默新建、不串会话）',
+    stale.status === 409 && stale.body.code === 'stale-session',
+    JSON.stringify(stale.body).slice(0, 140))
+
+  // 向后兼容：不带 sessionId / conversation（旧面板）→ 行为与改造前一致（新会话、只有 1 条用户消息）
+  const legacy = await runToEnd(rM, { question: '旧面板式一次会话', provider: 'p-alpha', model: 'p-alpha-m1' })
+  check('多轮⑤：不带 sessionId 与旧行为一致（新会话、模型只见本句）',
+    legacy.body.state === 'done' && multi.snaps[8]?.len === 1 && !String(multi.snaps[8]?.text).includes(Q_A1),
+    `len=${multi.snaps[8]?.len}`)
+
   // ── 13d. 参数校验 ──
   const resD1 = await rt(localWith(scripted([textTurn('x')]).llm, localWeb), { provider: 'p-alpha', model: 'p-alpha-m1' })
   check('agent 缺 question → 400', resD1.status === 400, String(resD1.status))

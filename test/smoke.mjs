@@ -18,7 +18,7 @@ import { ENTRIES, validateRegistry, CATEGORIES } from '../src/core/registry.js'
 import { runMany, validateEngines, resolveMethod } from '../src/core/runner.js'
 import { aggregate, detectTopic } from '../src/core/aggregate.js'
 import { render, renderSummary, renderTable, renderList, primeList } from '../src/core/format.js'
-import { VERDICTS, verdictOf } from '../src/core/kit.js'
+import { VERDICTS, verdictOf, xunOf, ganzhiOf } from '../src/core/kit.js'
 import { LIUYAO } from '../src/core/tables.js'
 
 let pass = 0
@@ -46,6 +46,19 @@ check('二十八宿有名', !!chart.almanac.xiu, chart.almanac.xiu)
 check('九星有名', !!chart.almanac.nineStar, chart.almanac.nineStar)
 check('宜忌非空', chart.almanac.yi.length > 0 && chart.almanac.ji.length > 0)
 check('旬空两支', chart.xun.kong.length === 2, chart.xun.kong.join(''))
+// 防回归：旬空必须在**全部 60 甲子**上成立。
+// v1 的 kit.xunOf 用 min(干序,支序) 退旬首，在 20/60 个组合上退到非旬首串，导致 kong 为空数组——
+// 而「旬空两支」这条断言只在恰好用到那 20 个日干支时才会炸，属潜伏坑（2026-10-05 日柱壬子即其一）。
+{
+  const bad = []
+  for (let i = 0; i < 60; i += 1) {
+    const gz = ganzhiOf(i)
+    const { xun, kong } = xunOf(gz)
+    if (kong.length !== 2) bad.push(`${gz}→${xun} kong=${JSON.stringify(kong)}`)
+    else if (xun[0] !== '甲') bad.push(`${gz}→旬首非甲: ${xun}`)
+  }
+  check('旬空在 60 甲子上全部成立（旬首恒为甲、空亡恒两支）', bad.length === 0, bad.slice(0, 6).join(' | '))
+}
 check('神煞四项', Object.keys(chart.shensha).length === 4)
 check('五行统计非零', Object.values(chart.wuxing).some((v) => v > 0))
 
@@ -201,31 +214,72 @@ check('应期均值均为有限数', board.timing.every((t) => Number.isFinite(t
 check('断语无 [object Object]', !board.advice.includes('[object Object]'), board.advice.slice(0, 120))
 check('断语含归类名', board.advice.includes('事业'), board.advice.slice(0, 120))
 
-// ─────────── 5. 确定性 ───────────
-section('5. 确定性与随机性')
-const chartA = buildChart({ question: '同一问题', when: new Date(2026, 8, 30, 14, 30), longitude: 116.4 })
-const chartB = buildChart({ question: '同一问题', when: new Date(2026, 8, 30, 14, 30), longitude: 116.4 })
-const rA = runMany({ chart: chartA }).map((r) => r.outcome?.essence + '|' + r.outcome?.score)
-const rB = runMany({ chart: chartB }).map((r) => r.outcome?.essence + '|' + r.outcome?.score)
-check('同问同刻 → 结果完全一致', JSON.stringify(rA) === JSON.stringify(rB))
+// ─────────── 5. 随机性与 seed 复现 ───────────
+// 口径已按用户 2026-02 更正修改：**默认真随机**（术法里「心诚」是变量 —— 同一人同问同刻也可能不同），
+// 旧断言「同问同刻必得同一结果」已废除；可复现性只在**显式 seed** 下承诺。
+// 断言按三类重新设计（详见 docs/verification/querent-and-geo.md「口径变更对验收网的影响」）：
+//   A 类 确定性 → 移到 seed 模式（目的是"管线可复现"，不是"术法必然一致"）
+//   B 类 随机性 → 改统计型：重复 N 次须出现 ≥2 种结果（写死常数的实现必挂，故仍有判别力）
+//   C 类 整体性 → 在**随机模式**下测"换问题大量改变"（常数实现会 0 改变，故仍有判别力）
+section('5. 随机性与 seed 复现')
+const WHEN5 = new Date(2026, 8, 30, 14, 30)
+const SEED5 = 'smoke-fixed-seed'
+const fingerprint = (rs) => rs.map((r) => r.outcome?.essence + '|' + r.outcome?.score)
 
-const chartC = buildChart({ question: '另一个完全不同的问题', when: new Date(2026, 8, 30, 14, 30), longitude: 116.4 })
-const rC = runMany({ chart: chartC }).map((r) => r.outcome?.essence + '|' + r.outcome?.score)
-const diffCount = rA.filter((v, i) => v !== rC[i]).length
+// ── A 类：seed 模式必须可复现 ──
+const chartA = buildChart({ question: '同一问题', when: WHEN5, longitude: 116.4, seed: SEED5 })
+const chartB = buildChart({ question: '同一问题', when: WHEN5, longitude: 116.4, seed: SEED5 })
+const rA = fingerprint(runMany({ chart: chartA }))
+const rB = fingerprint(runMany({ chart: chartB }))
+check('seed 模式下 同问同刻 + 同 seed → 结果完全一致', JSON.stringify(rA) === JSON.stringify(rB))
+check('seed 模式自证：meta.mode=seed + modeNote', chartA.meta.mode === 'seed'
+  && String(chartA.meta.modeNote).includes('seed'), chartA.meta.mode)
+const rndChart = buildChart({ question: '模式自证', when: WHEN5 })
+check('随机模式自证：meta.mode=random + seedUsed + modeNote', rndChart.meta.mode === 'random'
+  && typeof rndChart.meta.seedUsed === 'string' && String(rndChart.meta.modeNote).includes('随机模式'), rndChart.meta.mode)
+
+// ── A 类补充：默认随机模式下**不保证一致**（实测须出现不同）──
+const randRuns = []
+for (let i = 0; i < 5; i += 1) {
+  randRuns.push(JSON.stringify(fingerprint(runMany({ chart: buildChart({ question: '同一问题', when: WHEN5, longitude: 116.4 }) }))))
+}
+check('默认随机模式下 同问同刻重复求占 允许不同（且确实出现过不同）', new Set(randRuns).size > 1,
+  `${new Set(randRuns).size} 种结果 / 5 次`)
+
+// ── B 类：随机类必须**真随机**（统计型；写死常数的实现必挂）──
+// 同问同刻重复 20 次，随机类须出现 ≥2 种结果；#90 掷筊结果空间仅 10 种，
+// 20 次全同的概率 ≈ (1/10)^19 ≈ 0，故"撞车"不会造成概率性失败。
+const RANDOM_DEPENDENT = [1 /* 大衍 */, 2 /* 金钱卦 */, 90 /* 掷筊 */, 107 /* 塔罗 */, 108 /* 卢恩 */]
+const N_RAND = 20
+const randMatrix = []
+for (let i = 0; i < N_RAND; i += 1) {
+  randMatrix.push(runMany({ chart: buildChart({ question: '同一问题', when: WHEN5, longitude: 116.4 }) })
+    .map((r) => `${r.outcome?.essence}|${r.outcome?.score}`))
+}
+for (const no of RANDOM_DEPENDENT) {
+  const kinds = new Set(randMatrix.map((row) => row[no - 1]))
+  check(`随机类 #${no} 在 ${N_RAND} 次重复中确实出现多种结果（真随机）`, kinds.size >= 2,
+    `${kinds.size} 种：${[...kinds].slice(0, 2).join(' / ')}`)
+}
+
+// ── B 类反向：纯历法类**不得**被随机污染（同问同刻重复 5 次须逐字相同）──
+const CALENDAR_ONLY = [59 /* 黄历宜忌 */, 60 /* 建除 */, 61 /* 二十八宿择日 */, 62 /* 黄黑道 */, 69 /* 六曜 */]
+for (const no of CALENDAR_ONLY) {
+  const kinds = new Set(randRuns.map((json) => JSON.parse(json)[no - 1]))
+  check(`历法类 #${no} 在 5 次随机模式重复中逐字相同（未被随机污染）`, kinds.size === 1,
+    `${kinds.size} 种：${[...kinds].slice(0, 2).join(' / ')}`)
+}
+
+// ── C 类：换问题 → 大量法结果改变（随机模式下测；常数实现会 0 改变，故仍有判别力）──
+const rXC = fingerprint(runMany({ chart: buildChart({ question: '另一个完全不同的问题', when: WHEN5, longitude: 116.4 }) }))
+const rXA = JSON.parse(randRuns[0])
+const diffCount = rXA.filter((v, i) => v !== rXC[i]).length
 check('换问题 → 相当比例的法结果改变', diffCount > 30, `变了 ${diffCount}/108`)
 
-// 精确化：依赖随机源的术法必须变；纯历法的术法必须**不**变。
-// 这一对断言比「变了多少条」更有意义——它同时证明了「随机确实在起作用」
-// 与「历法类没有被随机污染」。
-const essenceOf = (list, no) => list[no - 1]
-const RANDOM_DEPENDENT = [1 /* 大衍 */, 2 /* 金钱卦 */, 90 /* 掷筊 */, 107 /* 塔罗 */, 108 /* 卢恩 */]
-const CALENDAR_ONLY = [59 /* 黄历宜忌 */, 60 /* 建除 */, 61 /* 二十八宿择日 */, 62 /* 黄黑道 */, 69 /* 六曜 */]
-for (const no of RANDOM_DEPENDENT) {
-  check(`随机类 #${no} 随问题改变`, essenceOf(rA, no) !== essenceOf(rC, no), `${essenceOf(rA, no)} vs ${essenceOf(rC, no)}`)
-}
-for (const no of CALENDAR_ONLY) {
-  check(`历法类 #${no} 不随问题改变`, essenceOf(rA, no) === essenceOf(rC, no), `${essenceOf(rA, no)} vs ${essenceOf(rC, no)}`)
-}
+// （原「随机类 #N 随问题改变 / 历法类 #N 不随问题改变」两条循环断言已上移并重写为
+//   B 类统计型：随机类看"20 次重复是否出现多种结果"，历法类看"5 次随机模式重复是否逐字相同"。
+//   原因见 docs/verification/querent-and-geo.md：默认随机后，"随问题改变"变成概率性断言，
+//   在 seed 模式下同 seed 改问题又不会改变随机序列 —— 两种旧写法都失去判别力。）
 
 // ─────────── 6. 输出与 token 预算 ───────────
 section('6. 输出与 token 预算')

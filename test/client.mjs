@@ -163,20 +163,30 @@ section('5b. 胶囊悬浮窗的交互形态（学提示词优化插件 dsh-po06�
     typeof capsule?.props?.style?.borderRadius === 'number', String(capsule?.props?.style?.borderRadius))
 
   const nodes = collect(treeOpen)
-  const input = nodes.find((e) => e.type === 'input' && typeof e.props?.placeholder === 'string'
+  // 输入框：task-23 起是 **textarea**（要支持 Shift+Enter 换行，单行 input 做不到）
+  const input = nodes.find((e) => (e.type === 'input' || e.type === 'textarea') && typeof e.props?.placeholder === 'string'
     && e.props.placeholder.includes('所问之事'))
-  check('展开态有输入框', !!input, String(input?.props?.placeholder))
-  check('输入框支持回车起卦（onKeyDown）', typeof input?.props?.onKeyDown === 'function')
+  check('展开态有输入框（一问一答：输入框常驻）', !!input, `${input?.type} ${String(input?.props?.placeholder)}`)
+  check('输入框支持回车发送（onKeyDown）', typeof input?.props?.onKeyDown === 'function')
+  check('回车发送 / Shift+回车换行（textarea + shiftKey 判断）',
+    input?.type === 'textarea' && source.includes("e.key === 'Enter' && e.shiftKey !== true"),
+    String(input?.type))
   const labels = nodes.filter((e) => e.type === 'button').map((e) => JSON.stringify(e.children.filter((c) => typeof c === 'string')))
   check('有「起卦」按钮（全在面板里跑，不进主会话）', source.includes("'起卦'"), labels.join(' '))
   check('有「清空」按钮', labels.some((l) => l.includes('清空')), labels.join(' '))
+  check('有「新对话」按钮（清空对话流与会话 id）',
+    labels.some((l) => l.includes('新对话')) && source.includes('newConversation'), labels.join(' '))
 
-  // 排版：判词在最上，其次是合盘总断
-  const iJudge = source.indexOf('judgeBlock,')
-  const iVerdict = source.indexOf('合盘总断【')
-  const iQuestion = source.indexOf('record.question ||')
-  check('AI 判词渲染在合盘总断之前（头一块）', iJudge > 0 && iJudge < iVerdict, `judge@${iJudge} verdict@${iVerdict}`)
-  check('合盘总断渲染在「所问」之前', iVerdict > 0 && (iQuestion < 0 || iVerdict < iQuestion))
+  // 排版：**结论优先**（task-21/23 重构后的新顺序）
+  // 改前：`AI 判词渲染在合盘总断之前`；改后：对话流 → 当前一盘的大字总断 → 一句话收束 → 折叠区（判词在最底）。
+  // 判别力：把判词搬回顶部挡住结论、把收束塞到明细之后、或让对话流跑到结论下面 → 立刻挂。
+  // 注意：断言必须锚在 **body 的渲染顺序**上 —— `合盘总断【` 这个字面量在 resultCard 里也有一份，
+  // 用全文 indexOf 会拿错位置（本次就踩到了），所以改成取 body 片段按标记顺序比较。
+  const bodySeg = source.slice(source.indexOf('⓪ 对话流'), source.indexOf('questionLine)'))
+  const seq = ['conversationBlock,', 'verdictBlock,', 'oneLineBlock,', 'detailFold,', 'judgeBlock,']
+    .map((k) => bodySeg.indexOf(k))
+  check('排版：对话流 → 总断 → 一句话收束 → 折叠区（明细在判词之前）',
+    seq.every((v, i) => v >= 0 && (i === 0 || v > seq[i - 1])), JSON.stringify(seq))
 
   const selects = nodes.filter((e) => e.type === 'select')
   check('3 个下拉（provider / model / 思考强度）', selects.length === 3, String(selects.length))
@@ -397,7 +407,8 @@ try {
       advice: bigText,
       wuxing: { 木: 14.8, 火: 17.3, 土: 24.7, 金: 31.3, 水: 11.8 },
       dominant: '金', lacking: '水',
-      consensusKeys: [{ key: '通用', count: 8, avg: 3 }],
+      // cats/fams 是聚合层真会输出的字段（跨门共识必须显示门数，见 task-21）；mock 也要带齐
+      consensusKeys: [{ key: '通用', count: 8, avg: 3, cats: 4, fams: 3 }],
       timing: [{ text: '水月', count: 3 }],
       conflicts: [{ cat: '易卦', high: { name: '之卦占', score: 65 }, low: { name: '六爻纳甲', score: -99 } }],
       meta: { computed: 87, count: 108, skipped: 21 },
@@ -459,15 +470,18 @@ try {
     all.length > 150 && hasText('合盘总断') && all.filter((e) => e.type === 'tr').length >= 108,
     `节点数=${all.length} tr=${all.filter((e) => e.type === 'tr').length}`)
 
-  const iOne = idxOf('一句话收束')
-  const iJudge = idxOf('综合判词')
-  const iVerdict = idxOf('合盘总断')
-  check('⭐ 一句话收束被单独拆出来并置顶（排在综合判词之前）',
-    iOne >= 0 && iJudge >= 0 && iOne < iJudge, `one@${iOne} judge@${iJudge}`)
-  check('收束里保留了落点与形态（甲寅日 10-07 / 不是「一步到位官宣」）',
-    hasText('甲寅日 10-07') && hasText('不是「一步到位官宣」'))
-  check('判词排在程序化总断之前、合盘在其下',
-    iJudge >= 0 && iVerdict >= 0 && iJudge < iVerdict, `judge@${iJudge} verdict@${iVerdict}`)
+  // 排版（锚在「当前一盘」这一节内部比较）：上面的对话流可能也有结果卡，
+  // 用全文 indexOf 会把卡里的字面量当成分区顺序（task-23 踩到过）。
+  const iBoard = idxOf('当前一盘')
+  const afterBoard = (needle) => all.findIndex((e, k) => k > iBoard
+    && (e.children ?? []).some((x) => typeof x === 'string' && x.includes(needle)))
+  const iVerdict = afterBoard('合盘总断')
+  const iOne = afterBoard('一句话收束')
+  const iJudge = afterBoard('完整 AI 判词')
+  check('⭐ 结论优先：当前一盘里总断在最上，一句话收束紧随其后',
+    iBoard >= 0 && iVerdict > iBoard && iOne > iVerdict, `board@${iBoard} verdict@${iVerdict} one@${iOne}`)
+  check('完整判词在总断之后（收进折叠区，不再占据首屏）', iJudge > iVerdict,
+    `judge@${iJudge} verdict@${iVerdict}`)
 
   // 跑完自动收起执行过程（不占面板位置）
   const toggle = all.find((e) => e.type === 'button'
@@ -483,8 +497,197 @@ try {
       openedAll.some((e) => (e.children ?? []).some((x) => typeof x === 'string' && x.includes(STEP_MARK))),
       `节点数=${openedAll.length}`)
   }
+
+  // ── 懒人化（task-21）：默认只有"输入框 + 结论"，配置与细节必须真的收起 ──
+  const foldOf = (n) => all.find((e) => e.props?.['data-fold'] === n)
+  const FOLDS = ['detail', 'divergence', 'categories', 'evidence', 'judge']
+  check('懒人化：结论区 5 个折叠块默认全部收起（display:none）',
+    FOLDS.every((n) => foldOf(n)?.props?.style?.display === 'none'),
+    FOLDS.map((n) => `${n}=${String(foldOf(n)?.props?.style?.display)}`).join(' '))
+  check('懒人化：高级区（provider/model/强度/联网）默认收起，不挡路',
+    foldOf('advanced')?.props?.style?.display === 'none', String(foldOf('advanced')?.props?.style?.display))
+  check('懒人化：提示条默认收起（近似/未起逐条不占屏）',
+    foldOf('hints')?.props?.style?.display === 'none', String(foldOf('hints')?.props?.style?.display))
+  // 点开必须真的展开（否则"折叠"只是个装饰，用户永远看不到内容）
+  const advToggle = all.find((e) => e.type === 'button'
+    && JSON.stringify(e.children ?? []).includes('高级'))
+  if (advToggle) {
+    advToggle.props.onClick()
+    const after = collect(h.drain(render5))
+    const adv2 = after.find((e) => e.props?.['data-fold'] === 'advanced')
+    check('点开「高级」后配置真的出现（display:block）', adv2?.props?.style?.display === 'block',
+      String(adv2?.props?.style?.display))
+    check('展开后能看到 3 个下拉与联网勾选（控件确实在树里，不是被删掉）',
+      after.filter((e) => e.type === 'select').length === 3
+      && after.filter((e) => e.type === 'input' && e.props?.type === 'checkbox').length === 1,
+      `select=${after.filter((e) => e.type === 'select').length}`)
+  } else {
+    check('找到「高级」折叠开关', false, '(没找到)')
+  }
+  // 跨门共识必须带门数（本次重写的核心设计）：在**整棵树的可读文本**里找「8法/4门」
+  const allText = all.map((e) => (e.children ?? []).filter((x) => typeof x === 'string').join(' ')).join(' ｜ ')
+  check('跨门共识显示「N法/M门」（不再是只显示法数）',
+    /跨门共识/.test(allText) && /8法\/4门/.test(allText), allText.slice(0, 200))
+  // 提示条四项
+  check('提示条含 近似/未起/位置/随机模式 四项',
+    hasText('⚠ 近似') && hasText('未起') && hasText('位置：') && hasText('随机模式'), '')
+  // 按钮：再占一次 **不得**承诺一致性；两个复制按钮要在
+  const againBtn = all.find((e) => e.type === 'button' && JSON.stringify(e.children ?? []).includes('再占一次'))
+  check('有「再占一次」按钮，且**不**提示"结果应相同"（与默认随机口径一致）',
+    !!againBtn && !/应相同|必然相同|保证一致/.test(String(againBtn.props?.title ?? '')),
+    String(againBtn?.props?.title ?? '(没找到)'))
+  check('有「复制结论」「复制 seed」按钮',
+    all.some((e) => e.type === 'button' && JSON.stringify(e.children ?? []).includes('复制结论'))
+    && all.some((e) => e.type === 'button' && JSON.stringify(e.children ?? []).includes('复制 seed')))
 } catch (err) {
   check('压力测试未抛异常', false, `${err?.constructor?.name}: ${err?.message}`)
+}
+
+// ─────────────────────────── 5g. 一问一答（task-23） ───────────────────────────
+
+section('5g. 一问一答：多轮续接 + 结果卡')
+try {
+  /** 支持 setState 重渲染的迷你渲染器（同 5f）：多轮断言必须靠真状态。 */
+  const mini = (base, overrides = {}) => {
+    const store = new Map()
+    const setters = []
+    let dirty = false
+    const React2 = {
+      ...base,
+      useState(init) {
+        const i = setters.length
+        if (!store.has(i)) store.set(i, Object.prototype.hasOwnProperty.call(overrides, i) ? overrides[i] : init)
+        const set = (v) => { store.set(i, typeof v === 'function' ? v(store.get(i)) : v); dirty = true }
+        setters.push(set)
+        return [store.get(i), set]
+      },
+    }
+    return {
+      React2,
+      drain(renderFn) {
+        let out
+        for (let k = 0; k < 60; k += 1) {
+          setters.length = 0
+          dirty = false
+          out = renderFn()
+          if (!dirty) break
+        }
+        return out
+      },
+    }
+  }
+  // 第 0 个 state 是 `open`（面板展开）；其余走默认（question 空、provider/model 空，由交互填）。
+  const h = mini(React, { 0: true })
+  const p = loadBundle(h.React2)
+  const calls = []
+  const RD = (payload) => Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify(payload)) })
+  const recFor = (id, q) => ({
+    id, question: q, when: '2026-09-30 14:30', pillars: ['丙午', '丁酉', '己酉', '乙丑'], lunar: '八月二十', seed: `rnd-${id}`,
+    mode: 'random', position: { corrected: true, from: '用户当前位置（浏览器定位）' },
+    board: {
+      overall: { verdict: '平', score: 10, consistency: 0.6, confidence: 0.5 },
+      polarity: { 吉: 40, 平: 30, 凶: 17 },
+      advice: '此事中平偏吉，宜缓图。',
+      wuxing: { 木: 14, 火: 17, 土: 24, 金: 31, 水: 11 }, dominant: '金', lacking: '水',
+      consensusKeys: [{ key: '通用', count: 8, avg: 3, cats: 4 }],
+      timing: [{ text: '水月', count: 3 }],
+      conflicts: [], divergence: { grade: 'D1', items: [] },
+      meta: { computed: 87, count: 108, skipped: 21, fidelityTally: { approx: 40 } },
+    },
+    results: [],
+  })
+  let turn = 0
+  globalThis.fetch = (url, init) => {
+    const kind = /kind=([a-z]+)/.exec(String(url))?.[1] ?? '?'
+    const body = init?.body ? JSON.parse(init.body) : {}
+    calls.push({ kind, body })
+    if (kind === 'run') { turn += 1; return RD({ ok: true, record: recFor(turn, body.question) }) }
+    if (kind === 'agent') {
+      // 首轮返回 sessionId；续接轮必须带回同一个（否则宿主那边就是两段会话）
+      const sessionId = body.sessionId ?? `srv-${turn}`
+      return RD({ ok: true, sid: sessionId, sessionId, state: 'running', steps: [] })
+    }
+    if (kind === 'agentpoll') {
+      return RD({ ok: true, sid: 'srv-1', sessionId: 'srv-1', state: 'done', judgment: `判词第 ${turn} 轮：会在 10 月成事。`, steps: [{ kind: 'done', text: '判词' }], record: null })
+    }
+    return RD({ ok: true })
+  }
+  let panel = null
+  p.apply({
+    slots: {
+      inject: (slot, fn) => { fn(); return () => {} },
+      register: (options, component) => {
+        if (options?.name === 'shell.overlay') panel = p.__panel ?? component
+        return () => {}
+      },
+    },
+    effect: (fn) => { fn(); return () => {} },
+    get: () => undefined,
+  })
+  const renderFn = () => (p.__panel ?? panel)({})
+  let tree = h.drain(renderFn)
+  const findInput = (nodes) => nodes.find((e) => (e.type === 'input' || e.type === 'textarea')
+    && typeof e.props?.placeholder === 'string' && e.props.placeholder.includes('所问之事'))
+  const findSend = (nodes) => nodes.find((e) => e.type === 'button'
+    && typeof e.props?.title === 'string' && e.props.title.includes('像在会话里一样起卦'))
+  const findSelect = (nodes, title) => nodes.find((e) => e.type === 'select' && e.props?.title === title)
+
+  /** 像用户一样：填输入框 → （首次还要选 provider/model）→ 点发送 → 等状态落定。 */
+  const send = async (text, first = false) => {
+    let nodes = collect(h.drain(renderFn))
+    findInput(nodes).props.onChange({ target: { value: text } })
+    nodes = collect(h.drain(renderFn))
+    if (first) {
+      findSelect(nodes, 'provider').props.onChange({ target: { value: 'p-alpha' } })
+      nodes = collect(h.drain(renderFn))
+      findSelect(nodes, 'model').props.onChange({ target: { value: 'p-alpha-m1' } })
+      nodes = collect(h.drain(renderFn))
+    }
+    const btn = findSend(nodes)
+    await btn.props.onClick()
+    // startRun 里有 await（定位 / 两趟请求）→ 让微任务与定时器跑完再取树
+    for (let k = 0; k < 12; k += 1) await new Promise((r) => { setTimeout(r, 0) })
+    return collect(h.drain(renderFn))
+  }
+
+  const after1 = await send('第一次所问：这次合作能不能成', true)
+  const agentCalls1 = calls.filter((c) => c.kind === 'agent')
+  check('第一轮：agent 请求体带 conversation:true 且**不带** sessionId（新会话由宿主建）',
+    agentCalls1.length === 1 && agentCalls1[0].body.conversation === true && agentCalls1[0].body.sessionId === undefined,
+    JSON.stringify(agentCalls1[0]?.body ?? {}).slice(0, 160))
+
+  const after2 = await send('第二次所问：那应期在几月？')
+  const agentCalls2 = calls.filter((c) => c.kind === 'agent')
+  const texts2 = (nodes) => nodes.map((e) => (e.children ?? []).filter((x) => typeof x === 'string').join(''))
+  check('① 连发两条 → 对话流**累积**（两条用户消息都在，不是覆盖）',
+    texts2(after2).filter((t) => t.includes('第一次所问')).length >= 1
+    && texts2(after2).filter((t) => t.includes('第二次所问')).length >= 1,
+    texts2(after2).filter((t) => t.includes('所问：那') || t.includes('第一次所问')).join(' | ').slice(0, 120))
+  check('② 第二轮请求体带**同一个** sessionId（模型因此能看到上一句）',
+    agentCalls2.length === 2 && agentCalls2[1].body.sessionId === 'srv-1',
+    JSON.stringify(agentCalls2.map((c) => c.body.sessionId)))
+  check('④ 结果卡与模型消息**同时存在**（结论不被判词挤掉）',
+    texts2(after2).some((t) => t.includes('合盘总断')) && texts2(after2).some((t) => t.includes('判词第')),
+    texts2(after2).filter((t) => t.includes('合盘总断') || t.includes('判词第')).slice(0, 3).join(' | ').slice(0, 160))
+  check('③ 每轮都先走 kind=run 秒回结果卡（共 2 次 run）',
+    calls.filter((c) => c.kind === 'run').length === 2,
+    calls.map((c) => c.kind).join('→'))
+
+  // 新对话：清空对话流并**丢掉** sessionId → 下一轮重新建会话
+  const nodes2 = collect(h.drain(renderFn))
+  const newBtn = nodes2.find((e) => e.type === 'button' && JSON.stringify(e.children ?? []).includes('新对话'))
+  check('找到「新对话」按钮', !!newBtn)
+  await newBtn.props.onClick()
+  const cleared = collect(h.drain(renderFn))
+  check('「新对话」后对话流清空', !texts2(cleared).some((t) => t.includes('第一次所问')),
+    texts2(cleared).filter((t) => t.includes('所问')).join(' | ').slice(0, 80))
+  const after3 = await send('第三次所问：换个问题')
+  const agentCalls3 = calls.filter((c) => c.kind === 'agent')
+  check('③ 新对话后的请求**不再带旧 sessionId**（否则会串到上一段会话）',
+    agentCalls3.length === 3 && agentCalls3[2].body.sessionId === undefined,
+    JSON.stringify(agentCalls3.map((c) => c.body.sessionId)))
+} catch (err) {
+  check('一问一答驱动未抛异常', false, `${err?.constructor?.name}: ${err?.message}`)
 }
 
 // ─────────────────────────── 6. 降级 ───────────────────────────

@@ -139,6 +139,10 @@ export function wangShuai(wx, monthWx) {
  */
 export function ganzhiOf(index) {
   const i = mod(index, 60)
+  // v2 修正（独立穷举复核 F2）：非数值/非整数入参原会走到 `GAN[NaN] + ZHI[NaN]`，
+  // 两个 undefined 相加得到**数值 NaN**，违反本函数声明的 string 契约，拼进文本会得到字面量 "NaN"。
+  // 与 kit 既有约定（nayinOf/changshengOf/liuShenOf 都回落 '—'）保持一致。
+  if (!Number.isFinite(i) || !Number.isInteger(i)) return '—'
   return GAN[i % 10] + ZHI[i % 12]
 }
 
@@ -172,6 +176,15 @@ export function nayinOf(gz) {
 
 /**
  * 干支所属旬与旬空。
+ *
+ * ⚠ v2 修正（v1 有 20/60 的日子算错）：
+ * v1 用 `back = min(干序, 支序)` 退到旬首，这只在「干序 ≤ 支序」时成立。
+ * 六十甲子中另有 20 个是「干序 > 支序」（如 壬子 干序8/支序0），退位会落到**非旬首**串上，
+ * 于是 `XUNKONG[xun]` 查不到、`kong` 返回空数组 —— 而 smoke 的「旬空两支」断言会在那些日子失败。
+ * 正确做法：旬首的干支序恒定后退 `干序` 步（因为旬首天干恒为甲），地支侧取模：
+ *   旬首支序 = (支序 − 干序) mod 12，旬首 = 甲 + 该支；空亡即旬首后两位地支。
+ * 已用 60 甲子穷举验证 60/60 与通行的旬空表吻合。
+ *
  * @param {string} gz 干支（两字）。
  * @returns {{xun:string, kong:string[]}} 旬首与空亡两支。
  */
@@ -179,10 +192,10 @@ export function xunOf(gz) {
   const gi = GAN.indexOf(gz[0])
   const zi = ZHI.indexOf(gz[1])
   if (gi < 0 || zi < 0) return { xun: '—', kong: [] }
-  // 旬首：干支同时后退 min(gi, zi) 步
-  const back = Math.min(gi, zi)
-  const xun = GAN[gi - back] + ZHI[zi - back]
-  return { xun, kong: XUNKONG[xun] ?? [] }
+  const xunZhi = mod(zi - gi, 12)
+  const xun = GAN[0] + ZHI[xunZhi]
+  const kong = [ZHI[(xunZhi + 10) % 12], ZHI[(xunZhi + 11) % 12]]
+  return { xun, kong: XUNKONG[xun] ?? kong }
 }
 
 /**
@@ -388,23 +401,40 @@ export function emptyWuxing() {
  * @returns {MethodOutcome} 规范化结果。
  */
 export function makeOutcome(raw) {
-  const score = clamp(Number(raw?.score) || 0, -100, 100)
+  // v2 加固（独立穷举复核）：非有限分数不再**静默**变 0。
+  // 分数仍夹成 0（保持函数"永不抛"的兜底语义，避免牵连只想要安全兜底的调用方），
+  // 但在 detail 上打 `__scoreInvalid` 标记，使审计能发现"本应是 bug、却被夹成中立票"的情形。
+  // 运行器那一层（runner.js）已改为直接判错，二者互补：一处拦截、一处留痕。
+  const rawScore = Number(raw?.score)
+  const scoreInvalid = raw?.score !== undefined && raw?.score !== null && !Number.isFinite(rawScore)
+  const score = clamp(scoreInvalid ? 0 : (Number.isFinite(rawScore) ? rawScore : 0), -100, 100)
   const wx = raw?.wuxing ?? {}
   const wuxing = emptyWuxing()
   for (const k of WUXING) {
     const v = Number(wx[k])
     if (Number.isFinite(v)) wuxing[k] = v
   }
-  const keys = Array.isArray(raw?.keys) ? raw.keys.filter((k) => typeof k === 'string' && k.length > 0).slice(0, 6) : []
+  // keys：**先去重再截断**（独立穷举复核 FAIL：原实现只过滤不查重，会把 ["财","财","财"] 原样透传，
+  // 而 keys 是合盘共识统计的输入——重复项等于给同一法门重复投票）。
+  const keys = Array.isArray(raw?.keys)
+    ? [...new Set(raw.keys
+      .filter((k) => typeof k === 'string' && k.trim() !== '')
+      .map((k) => k.trim()))].slice(0, 6)
+    : []
+  // detail 必须是普通对象：v1 会原样透传字符串，导致 renderDetail 逐字符渲染出一堆单字行
+  const detail = (raw?.detail && typeof raw.detail === 'object' && !Array.isArray(raw.detail)) ? { ...raw.detail } : {}
+  if (scoreInvalid) detail.__scoreInvalid = true
+  // timing 纯空白串不算有效应期（原实现把 ' ' 当成有应期）
+  const timingRaw = typeof raw?.timing === 'string' ? raw.timing.trim() : ''
   return {
     score,
     verdict: typeof raw?.verdict === 'string' && VERDICTS.includes(raw.verdict) ? raw.verdict : verdictOf(score),
     essence: typeof raw?.essence === 'string' ? truncate(raw.essence, 60) : '',
     keys,
     wuxing,
-    timing: typeof raw?.timing === 'string' && raw.timing.length > 0 ? raw.timing : null,
+    timing: timingRaw.length > 0 ? timingRaw : null,
     fidelity: raw?.fidelity === 'full' || raw?.fidelity === 'core' || raw?.fidelity === 'approx' ? raw.fidelity : 'core',
-    detail: raw?.detail ?? {},
+    detail,
   }
 }
 
@@ -430,3 +460,195 @@ export function truncate(s, n) {
  * @property {'full'|'core'|'approx'} fidelity 算法保真度。
  * @property {object} detail 完整盘（按需下钻时输出）。
  */
+
+// ═══════════════════════════════════════════════════════════════════
+// v2 新增：角度、统计、强度、证据链工具
+// 说明：本区块是**纯增量**，不改变上面任何既有导出的语义。
+// 方法层与聚合层共用；禁止在此放与具体术法有关的数据。
+// ═══════════════════════════════════════════════════════════════════
+
+/** 圆周常数（度）。 */
+export const DEG = 360
+
+/**
+ * 把任意角度归一到 [0,360)。
+ * @param {number} d 角度（度）。
+ * @returns {number} 归一化角度。
+ */
+export function norm360(d) {
+  const v = Number.isFinite(d) ? d : 0
+  return ((v % DEG) + DEG) % DEG
+}
+
+/**
+ * 两个黄经之间的最小夹角（0..180）。
+ * @param {number} a 黄经。
+ * @param {number} b 黄经。
+ * @returns {number} 夹角（度）。
+ */
+export function angleGap(a, b) {
+  const d = Math.abs(norm360(a) - norm360(b)) % DEG
+  return d > 180 ? DEG - d : d
+}
+
+/**
+ * 某黄经落在哪个 30° 星座区间（白羊起算）。
+ * @param {number} lon 黄经。
+ * @returns {number} 0..11。
+ */
+export function signIndexOf(lon) {
+  return Math.floor(norm360(lon) / 30) % 12
+}
+
+/**
+ * 把数值数组做中位数。
+ * @param {number[]} arr 数组（会被复制排序，不改原数组）。
+ * @returns {number} 中位数（空数组返回 0）。
+ */
+export function median(arr) {
+  const v = (Array.isArray(arr) ? arr : []).map(Number).filter(Number.isFinite).sort((a, b) => a - b)
+  if (v.length === 0) return 0
+  const mid = v.length >> 1
+  return v.length % 2 === 1 ? v[mid] : (v[mid - 1] + v[mid]) / 2
+}
+
+/**
+ * 截尾均值：去掉两端各 `trim` 比例的极值再平均。
+ * 合盘用它而不是纯均值，避免个别极端法门绑架总分。
+ * @param {number[]} arr 数值数组。
+ * @param {number} [trim] 每端裁掉的比例（0..0.4），默认 0.1。
+ * @returns {number} 截尾均值。
+ */
+export function trimmedMean(arr, trim = 0.1) {
+  const v = (Array.isArray(arr) ? arr : []).map(Number).filter(Number.isFinite).sort((a, b) => a - b)
+  if (v.length === 0) return 0
+  const t = clamp(trim, 0, 0.4)
+  const cut = Math.floor(v.length * t)
+  const kept = v.length - cut * 2 >= 1 ? v.slice(cut, v.length - cut) : v
+  return kept.reduce((s, x) => s + x, 0) / kept.length
+}
+
+/**
+ * 分位数（线性插值）。
+ * @param {number[]} arr 数组。
+ * @param {number} q 分位（0..1）。
+ * @returns {number} 分位值。
+ */
+export function quantile(arr, q) {
+  const v = (Array.isArray(arr) ? arr : []).map(Number).filter(Number.isFinite).sort((a, b) => a - b)
+  if (v.length === 0) return 0
+  const pos = clamp(q, 0, 1) * (v.length - 1)
+  const lo = Math.floor(pos)
+  const hi = Math.ceil(pos)
+  return lo === hi ? v[lo] : v[lo] + (v[hi] - v[lo]) * (pos - lo)
+}
+
+/**
+ * 加权平均数（权重 ≤0 的项被忽略）。
+ * @param {Array<{value:number, weight:number}>} items 项。
+ * @returns {number} 加权均值（无有效项返回 0）。
+ */
+export function weightedMean(items) {
+  let num = 0
+  let den = 0
+  for (const it of items ?? []) {
+    const w = Number.isFinite(it?.weight) ? it.weight : 0
+    if (w <= 0) continue
+    const v = Number(it?.value)
+    if (!Number.isFinite(v)) continue
+    num += v * w
+    den += w
+  }
+  return den === 0 ? 0 : num / den
+}
+
+/**
+ * 加权标准差。
+ * @param {Array<{value:number, weight:number}>} items 项。
+ * @param {number} [mean] 已算好的加权均值（省略则内部算）。
+ * @returns {number} 标准差。
+ */
+export function weightedStd(items, mean) {
+  const m = Number.isFinite(mean) ? mean : weightedMean(items)
+  let num = 0
+  let den = 0
+  for (const it of items ?? []) {
+    const w = Number.isFinite(it?.weight) ? it.weight : 0
+    if (w <= 0) continue
+    const v = Number(it?.value)
+    if (!Number.isFinite(v)) continue
+    num += w * (v - m) ** 2
+    den += w
+  }
+  return den === 0 ? 0 : Math.sqrt(num / den)
+}
+
+/**
+ * 两两同号率（一致性度量）：任意两法的吉凶方向是否一致。
+ * 比标准差更能反映"是否众口一词"——10 个 +5 和 10 个 -5 的均值是 0，
+ * 标准差很大但同号率是 0，两者含义不同，合盘两个都要报。
+ * @param {Array<{score:number, weight:number}>} items 项。
+ * @returns {number} 0..1（不足两项返回 1）。
+ */
+export function signAgreement(items) {
+  const v = (items ?? []).filter((x) => Number.isFinite(x?.score))
+  if (v.length < 2) return 1
+  let agree = 0
+  let total = 0
+  for (let i = 0; i < v.length; i += 1) {
+    for (let j = i + 1; j < v.length; j += 1) {
+      const w = (Number(v[i].weight) || 1) * (Number(v[j].weight) || 1)
+      const a = Math.sign(Math.round(v[i].score))
+      const b = Math.sign(Math.round(v[j].score))
+      // 任一方为"平"（0）时按半分计，避免把中立当成对立
+      const s = a === b ? 1 : (a === 0 || b === 0 ? 0.5 : 0)
+      agree += s * w
+      total += w
+    }
+  }
+  return total === 0 ? 1 : agree / total
+}
+
+/**
+ * 旺相休囚死 → 力量系数（0..1）。
+ *
+ * ⚠ v2 口径统一（独立穷举复核 W10）：本表**必须**与 {@link wangShuai} 的分值一一对应
+ * （`wangShuai().score / 100`），否则同一次旺衰判断在"状态名"与"力量系数"两条路径上会漂移。
+ * v2 早期版本此处写 休.50/囚.30/死.15，与 wangShuai 的 40/25/10 不一致，已按 wangShuai 归一。
+ */
+export const STRENGTH_FACTOR = { 旺: 1.0, 相: 0.75, 休: 0.4, 囚: 0.25, 死: 0.1 }
+
+/**
+ * 旺相休囚死 → 力量系数。
+ * @param {string} state 状态名。
+ * @returns {number} 0..1。
+ */
+export function strengthOf(state) {
+  return STRENGTH_FACTOR[state] ?? 0.5
+}
+
+/**
+ * 构造一条证据链节点。方法层用它把"用了哪条规则、取到什么值、推出什么结论"
+ * 串起来，塞进 `detail.evidence`。这不是给人看的散文，是给复核用的结构化记录。
+ * @param {string} rule 规则名（含出处，如「《增删卜易》用神取妻财」）。
+ * @param {string|number} value 取到的值。
+ * @param {string} [effect] 该项对分数的影响说明。
+ * @returns {{rule:string, value:string|number, effect?:string}} 证据节点。
+ */
+export function evidence(rule, value, effect) {
+  const node = { rule: String(rule ?? ''), value: value ?? '' }
+  if (effect !== undefined && effect !== null && String(effect) !== '') node.effect = String(effect)
+  return node
+}
+
+/**
+ * 把证据链压成一行摘要（塞进 detail 用，避免细节过长把 token 撑爆）。
+ * @param {Array<{rule:string, value:any, effect?:string}>} nodes 证据节点。
+ * @param {number} [max] 最多几条，默认 4。
+ * @returns {string} 摘要串。
+ */
+export function evidenceDigest(nodes, max = 4) {
+  const list = Array.isArray(nodes) ? nodes.filter(Boolean) : []
+  if (list.length === 0) return ''
+  return list.slice(0, max).map((n) => `${n.rule}=${n.value}`).join('；')
+}
